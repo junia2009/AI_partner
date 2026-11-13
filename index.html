@@ -305,6 +305,11 @@
   .memory-list li button { background: transparent; border: 1px solid var(--line); border-radius: 8px; padding: 3px 8px; font-size: 12px; color: var(--muted); }
   .memory-list li button:hover { color: var(--danger); border-color: var(--danger); }
   .msg.memo { color: var(--accent); }
+  .google-row { display: flex; align-items: center; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
+  .google-row .hint { flex: 1; margin: 0; min-width: 120px; }
+  .places { margin-top: 8px; padding-top: 6px; border-top: 1px solid rgba(124,196,255,.15); font-size: 12px; color: var(--muted); line-height: 1.8; white-space: normal; }
+  .places a { color: var(--accent); text-decoration: none; }
+  .places a:hover { text-decoration: underline; }
   .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 8px; }
   .primary { background: var(--accent); color: #0b0f17; border: none; border-radius: 10px; padding: 9px 18px; font-weight: 600; }
   .ghost { background: transparent; border: 1px solid var(--line); border-radius: 10px; padding: 9px 14px; }
@@ -330,6 +335,7 @@
   <div class="todo-bar">
     <button type="button" class="timer-chip morning" id="morningChip" hidden>☀ 朝の報告を聞く</button>
     <button type="button" class="timer-chip" id="todoChip" hidden></button>
+    <button type="button" class="timer-chip morning" id="googleChip" hidden>🔐 Googleに再接続</button>
     <div class="todo-panel" id="todoPanel" hidden>
       <div class="todo-head">やること <button type="button" id="todoClose" aria-label="閉じる">✕</button></div>
       <ul id="todoList"></ul>
@@ -382,17 +388,27 @@
       </select>
       <div class="hint">iPhone・iPad の標準の音声認識は、パラスが話したあと数分聞き取れなくなるため、Fish Audio の文字起こしを使います。Fish Audio のクレジットと、下の中継サーバーの設定が必要です。</div>
     </div>
+    <div class="field">
+      <label for="fishRelayUrl">中継サーバーのURL</label>
+      <input id="fishRelayUrl" type="text" placeholder="https://pallas-fish-relay.xxxx.workers.dev" autocomplete="off">
+      <div class="hint">Fish Audio・Google ログイン・Google マップ検索で使う Cloudflare Workers の中継サーバーです。設置手順はリポジトリの relay/README.md にあります。</div>
+    </div>
+    <div class="field">
+      <label for="googleClientId">Google 連携（カレンダー・Gmail）</label>
+      <input id="googleClientId" type="text" placeholder="OAuth クライアントID（xxxx.apps.googleusercontent.com）" autocomplete="off">
+      <div class="google-row">
+        <span id="googleStatus" class="hint"></span>
+        <button type="button" class="ghost" id="googleConnectBtn">Googleに接続</button>
+        <button type="button" class="ghost" id="googleDisconnectBtn">接続を解除</button>
+      </div>
+      <div class="hint">接続すると、パラスがカレンダーの予定の確認・追加と、Gmail の未読の確認・返信の下書きをできるようになります。メールを送信することはありません。</div>
+    </div>
     <div id="fishFields">
       <div class="field">
         <label for="fishVoice">パラスの声（Fish Audio）</label>
         <select id="fishVoice"></select>
         <input id="fishVoiceCustom" type="text" placeholder="Fish Audio の声のID（32文字）" autocomplete="off" style="margin-top:8px">
         <div class="hint">Fish Audio の公開ボイスです。声のページ（fish.audio/m/声のID）で試聴できます。</div>
-      </div>
-      <div class="field">
-        <label for="fishRelayUrl">中継サーバーのURL</label>
-        <input id="fishRelayUrl" type="text" placeholder="https://pallas-fish-relay.xxxx.workers.dev" autocomplete="off">
-        <div class="hint">Fish Audio はブラウザから直接呼べないため、Cloudflare Workers の中継サーバーを使います。設置手順はリポジトリの relay/README.md にあります。</div>
       </div>
       <div class="field">
         <label for="fishApiKey">Fish Audio の APIキー</label>
@@ -517,6 +533,15 @@ const PALLAS_SYSTEM_PROMPT = `あなたは「パラス」。マスター専属�
 - [今日はじめての会話（朝）] が付いていたら、返事の最初に短く朝のあいさつを添えてから、話に答えます。
 - 朝の報告は2〜4文にします。今日のやること（特に期限が今日・明日のもの）、設定中のタイマー、記憶から思い当たることを先回りして伝えます。何もなければ、あいさつと一言だけにします。
 
+# Google（カレンダー・Gmail・マップ）
+- 発言の先頭に [Google: カレンダー・Gmail 接続中] があれば、カレンダーと Gmail の道具が使えます。なければ、使おうとするとエラーになります。そのときは設定から接続できることを短く伝えます。
+- 予定を聞かれたら calendar_list_events で確かめてから答えます。記憶や推測で答えません。
+- 予定の追加を頼まれたら calendar_add_event で追加します。日時がはっきりしないときは、一度だけ短く確かめます。追加したら日時と名前を一言で伝えます。予定を消すのは頼まれたときだけです。
+- メールは gmail_list で確かめ、差出人と用件を短くまとめて伝えます。本文を全部読み上げることはしません。必要なら gmail_read で中身を確かめます。
+- 返信を頼まれたら gmail_create_draft で下書きを保存します。メールを送信する道具はありません。「下書きに入れておきました。確認して送ってください」と伝えます。
+- お店や場所を聞かれたら maps_search で探します。おすすめは2〜3件に絞り、評価・近さ・営業中かを短く伝えます。住所やURLは読み上げません（地図のリンクは画面に出ます）。
+- 朝の報告では、Google につながっていれば calendar_list_events で今日の予定も確かめて伝えます。
+
 # 場所
 - あなたとマスターは、電脳空間・夜の街の上空・星空・雲の上（朝焼け・青空・夕焼け）・雨の夜のどこかにいます。今いる場所は発言の先頭の [現在地] でわかります。
 - 「宇宙に行こう」「雨の場所がいい」「景色を変えて」などと頼まれたら travel_to で移動します。移動は返事のあとに行うので、「行きましょう」くらいの短い一言を添えます。
@@ -546,7 +571,7 @@ const store = {
 };
 const settings = Object.assign(
   { apiKey: "", voiceURI: "", rate: 1.1, pitch: 1.0, autoListen: false, model: "haiku", autoResetMin: 60, showTiming: true, diagLog: false,
-    ttsEngine: "browser", asrEngine: "auto", fishRelayUrl: "", fishApiKey: "", fishVoice: "45c5d3723c9c42f598e4776dcfd5f02d", fishVoiceCustom: "" },
+    ttsEngine: "browser", asrEngine: "auto", fishRelayUrl: "", googleClientId: "", fishApiKey: "", fishVoice: "45c5d3723c9c42f598e4776dcfd5f02d", fishVoiceCustom: "" },
   store.get("pallas.settings", {})
 );
 // API に送る会話履歴。アシスタントの応答は content ブロックをそのまま保存する（thinking ブロックも含めて変更しない）
@@ -637,6 +662,104 @@ const TOOLS = [
         },
       },
       required: ["place"],
+      additionalProperties: false,
+    },
+    eager_input_streaming: true,
+  },
+  {
+    name: "calendar_list_events",
+    description: "Google カレンダーの予定を見る。date（YYYY-MM-DD、省略で今日）から days 日分を返す。",
+    input_schema: {
+      type: "object",
+      properties: {
+        date: { type: "string", description: "見たい最初の日（YYYY-MM-DD）。省略すると今日" },
+        days: { type: "number", description: "何日分か（1〜14）。省略で1" },
+      },
+      additionalProperties: false,
+    },
+    eager_input_streaming: true,
+  },
+  {
+    name: "calendar_add_event",
+    description: "Google カレンダーに予定を1件追加する。時刻のある予定は start（YYYY-MM-DDTHH:MM）、終日の予定は all_day_date（YYYY-MM-DD）を指定する。",
+    input_schema: {
+      type: "object",
+      properties: {
+        title: { type: "string", description: "予定の名前" },
+        start: { type: "string", description: "開始日時（YYYY-MM-DDTHH:MM、24時間制）" },
+        end: { type: "string", description: "終了日時（YYYY-MM-DDTHH:MM）。省略時は duration_minutes か60分" },
+        duration_minutes: { type: "number", description: "長さ（分）。end を省くときに使う" },
+        all_day_date: { type: "string", description: "終日の予定の日付（YYYY-MM-DD）。start の代わりに使う" },
+        location: { type: "string", description: "場所（あれば）" },
+      },
+      required: ["title"],
+      additionalProperties: false,
+    },
+    eager_input_streaming: true,
+  },
+  {
+    name: "calendar_delete_event",
+    description: "Google カレンダーの予定を1件消す。calendar_list_events の結果に出てくる id を指定する。マスターに頼まれたときだけ使う。",
+    input_schema: {
+      type: "object",
+      properties: { id: { type: "string", description: "消す予定の id" } },
+      required: ["id"],
+      additionalProperties: false,
+    },
+    eager_input_streaming: true,
+  },
+  {
+    name: "gmail_list",
+    description: "Gmail のメールを一覧する。省略すると受信トレイの未読。query に Gmail の検索式（例：from:山田、newer_than:2d）を入れて絞り込める。",
+    input_schema: {
+      type: "object",
+      properties: {
+        query: { type: "string", description: "Gmail の検索式。省略で「is:unread in:inbox」" },
+        max: { type: "number", description: "最大件数（1〜10）。省略で5" },
+      },
+      additionalProperties: false,
+    },
+    eager_input_streaming: true,
+  },
+  {
+    name: "gmail_read",
+    description: "Gmail のメールを1通読む。gmail_list の結果に出てくる id を指定する。",
+    input_schema: {
+      type: "object",
+      properties: { id: { type: "string", description: "メールの id" } },
+      required: ["id"],
+      additionalProperties: false,
+    },
+    eager_input_streaming: true,
+  },
+  {
+    name: "gmail_create_draft",
+    description: "Gmail に下書きを保存する（送信はしない）。返信なら reply_to_id にそのメールの id を入れる（宛先と件名は自動で補う）。",
+    input_schema: {
+      type: "object",
+      properties: {
+        to: { type: "string", description: "宛先メールアドレス（返信なら省略可）" },
+        subject: { type: "string", description: "件名（返信なら省略可）" },
+        body: { type: "string", description: "本文" },
+        reply_to_id: { type: "string", description: "返信元のメールの id" },
+      },
+      required: ["body"],
+      additionalProperties: false,
+    },
+    eager_input_streaming: true,
+  },
+  {
+    name: "maps_search",
+    description: "Google マップでお店や場所を探す（例：静かなカフェ、ラーメン、コンビニ、近くの病院）。近くを探すときは near_me を true にする（現在地を使う）。",
+    input_schema: {
+      type: "object",
+      properties: {
+        query: { type: "string", description: "探すもの。地名を含めてもよい（例：渋谷 カフェ）" },
+        near_me: { type: "boolean", description: "現在地の近くを探すか。省略で true" },
+        open_now: { type: "boolean", description: "今開いているお店だけにするか" },
+        sort: { type: "string", enum: ["relevance", "distance"], description: "並び順。近い順なら distance" },
+      },
+      required: ["query"],
       additionalProperties: false,
     },
     eager_input_streaming: true,
@@ -734,6 +857,351 @@ function checkTimers(startup) {
 }
 setInterval(() => checkTimers(false), 1000);
 
+// ===== Google 連携（ログインの維持・カレンダー・Gmail・マップ） =====
+const GOOGLE_SCOPES = [
+  "https://www.googleapis.com/auth/calendar.events",
+  "https://www.googleapis.com/auth/gmail.readonly",
+  "https://www.googleapis.com/auth/gmail.compose",
+].join(" ");
+const TZ = Intl.DateTimeFormat().resolvedOptions().timeZone || "Asia/Tokyo";
+let gAccess = store.get("pallas.gAccess", null); // { token, exp }
+function googleConnected() { return !!store.get("pallas.gRefresh", ""); }
+function relayUrl() { return (settings.fishRelayUrl || "").replace(/\/+$/, ""); }
+async function relayPost(path, body, headers = {}) {
+  if (!relayUrl()) { const e = new Error("中継サーバーのURLが設定されていません"); e.status = 0; throw e; }
+  const res = await fetch(relayUrl() + path, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...headers },
+    body: JSON.stringify(body),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) { const e = new Error(data.message || `HTTP ${res.status}`); e.status = res.status; e.code = data.error; throw e; }
+  return data;
+}
+// Google のログイン用スクリプトは、ボタンを押した瞬間にポップアップを開けるよう前もって読み込んでおく
+let gisReady = null;
+function preloadGis() {
+  if (gisReady || !settings.googleClientId) return gisReady;
+  gisReady = new Promise((resolve, reject) => {
+    const sc = document.createElement("script");
+    sc.src = "https://accounts.google.com/gsi/client";
+    sc.async = true;
+    sc.onload = () => resolve();
+    sc.onerror = () => { gisReady = null; reject(new Error("Google のログイン用スクリプトを読み込めませんでした")); };
+    document.head.appendChild(sc);
+  });
+  return gisReady;
+}
+function connectGoogle() {
+  const clientId = ($("googleClientId")?.value || settings.googleClientId || "").trim();
+  if (!clientId) { addMsg("error", "設定で Google の OAuth クライアントID を入力してください。"); return; }
+  if (!relayUrl()) { addMsg("error", "設定で中継サーバーのURLを入力してください。"); return; }
+  if (!window.google?.accounts?.oauth2) {
+    settings.googleClientId = clientId;
+    preloadGis()?.then(() => addMsg("system", "Google の準備ができました。もう一度「Googleに接続」を押してください。"));
+    return;
+  }
+  const client = google.accounts.oauth2.initCodeClient({
+    client_id: clientId,
+    scope: GOOGLE_SCOPES,
+    ux_mode: "popup",
+    callback: async (resp) => {
+      if (resp.error || !resp.code) { addMsg("error", `Google に接続できませんでした（${resp.error || "キャンセル"}）。`); return; }
+      try {
+        const data = await relayPost("/google/token", { code: resp.code }, { "X-Requested-With": "XmlHttpRequest" });
+        gAccess = { token: data.access_token, exp: Date.now() + (data.expires_in || 3600) * 1000 };
+        store.set("pallas.gAccess", gAccess);
+        if (data.refresh_token) {
+          store.set("pallas.gRefresh", data.refresh_token);
+          addMsg("system", "Google に接続しました。カレンダーと Gmail が使えます。");
+        } else {
+          addMsg("error", "Google から長期のログイン情報が届きませんでした。Google アカウントの「サードパーティ製のアプリとサービス」からパラスのアクセスを削除して、もう一度接続してください。");
+        }
+        if (data.scope && !data.scope.includes("calendar")) addMsg("error", "カレンダーへのアクセスが許可されていません。接続し直して、すべての項目にチェックを入れてください。");
+        if (data.scope && !data.scope.includes("gmail")) addMsg("error", "Gmail へのアクセスが許可されていません。接続し直して、すべての項目にチェックを入れてください。");
+      } catch (err) {
+        addMsg("error", `Google のログインを中継サーバーで完了できませんでした（${err.message}）。`);
+      }
+      renderGoogleStatus();
+    },
+  });
+  client.requestCode();
+}
+function disconnectGoogle() {
+  const rt = store.get("pallas.gRefresh", "");
+  // 次に接続したとき長期のログイン情報が届くよう、Google 側の許可も取り消す
+  if (rt) fetch("https://oauth2.googleapis.com/revoke?token=" + encodeURIComponent(rt), { method: "POST" }).catch(() => {});
+  store.remove("pallas.gRefresh");
+  store.remove("pallas.gAccess");
+  gAccess = null;
+  renderGoogleStatus();
+  addMsg("system", "Google との接続を解除しました。");
+}
+function renderGoogleStatus() {
+  const el = $("googleStatus");
+  if (el) el.textContent = googleConnected() ? "接続中" : "未接続";
+  const chip = $("googleChip");
+  if (chip) chip.hidden = !(settings.googleClientId && !googleConnected() && store.get("pallas.gNeedReconnect", false));
+}
+async function googleToken() {
+  if (gAccess && gAccess.exp - 60000 > Date.now()) return gAccess.token;
+  const rt = store.get("pallas.gRefresh", "");
+  if (!rt) { const e = new Error("Google に接続されていません"); e.needConnect = true; throw e; }
+  try {
+    const data = await relayPost("/google/token", { refresh_token: rt }, { "X-Requested-With": "XmlHttpRequest" });
+    gAccess = { token: data.access_token, exp: Date.now() + (data.expires_in || 3600) * 1000 };
+    store.set("pallas.gAccess", gAccess);
+    return gAccess.token;
+  } catch (err) {
+    if (err.code === "invalid_grant") {
+      // テスト中のアプリは、Google の仕様で7日ほどでログインが切れる
+      store.remove("pallas.gRefresh");
+      store.set("pallas.gNeedReconnect", true);
+      renderGoogleStatus();
+      const e = new Error("Google のログインの有効期限が切れました"); e.needConnect = true; throw e;
+    }
+    throw err;
+  }
+}
+async function gapi(method, url, body) {
+  let token = await googleToken();
+  const go = (t) => fetch(url, {
+    method,
+    headers: { Authorization: `Bearer ${t}`, ...(body ? { "Content-Type": "application/json" } : {}) },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  let res = await go(token);
+  if (res.status === 401) { gAccess = null; token = await googleToken(); res = await go(token); }
+  if (res.status === 204) return {};
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) { const e = new Error(data.error?.message || `HTTP ${res.status}`); e.status = res.status; throw e; }
+  return data;
+}
+function googleError(err) {
+  if (err.needConnect) return { error: `${err.message}。マスターに、画面の「Googleに再接続」か設定の「Googleに接続」を押してもらうよう短く伝えること` };
+  if (err.status === 403) return { error: "Google でこの操作が許可されていません（接続時にチェックが外れていた可能性）。マスターに、設定から接続し直してもらうよう伝えること" };
+  return { error: `Google でエラーが起きました：${err.message}` };
+}
+
+// --- カレンダー ---
+const WD = ["日", "月", "火", "水", "木", "金", "土"];
+function fmtDay(d) { return `${d.getMonth() + 1}/${d.getDate()}(${WD[d.getDay()]})`; }
+function fmtHM(d) { return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`; }
+function localDateTime(str) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})T(\d{1,2}):(\d{2})$/.exec(String(str || "").trim());
+  return m ? new Date(+m[1], +m[2] - 1, +m[3], +m[4], +m[5]) : null;
+}
+function ymd(d) { return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; }
+async function calendarList(input) {
+  try {
+    let start;
+    if (typeof input?.date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(input.date)) {
+      const [y, m, d] = input.date.split("-").map(Number); start = new Date(y, m - 1, d);
+    } else { start = new Date(); start.setHours(0, 0, 0, 0); }
+    const days = Math.min(14, Math.max(1, Math.round(Number(input?.days) || 1)));
+    const end = new Date(start); end.setDate(end.getDate() + days);
+    const q = new URLSearchParams({ timeMin: start.toISOString(), timeMax: end.toISOString(), singleEvents: "true", orderBy: "startTime", maxResults: "40", timeZone: TZ });
+    const data = await gapi("GET", `https://www.googleapis.com/calendar/v3/calendars/primary/events?${q}`);
+    const items = data.items || [];
+    if (!items.length) return { result: `${fmtDay(start)}${days > 1 ? `から${days}日間` : ""}の予定はありません` };
+    return {
+      result: items.map((ev) => {
+        const loc = ev.location ? ` ＠${ev.location}` : "";
+        if (ev.start?.date) {
+          const [y, m, d] = ev.start.date.split("-").map(Number);
+          return `- (${ev.id}) ${fmtDay(new Date(y, m - 1, d))} 終日 ${ev.summary || "（無題）"}${loc}`;
+        }
+        const s1 = new Date(ev.start.dateTime), e1 = new Date(ev.end.dateTime);
+        return `- (${ev.id}) ${fmtDay(s1)} ${fmtHM(s1)}〜${fmtHM(e1)} ${ev.summary || "（無題）"}${loc}`;
+      }).join("\n"),
+    };
+  } catch (err) { return googleError(err); }
+}
+async function calendarAdd(input) {
+  const title = typeof input?.title === "string" ? input.title.trim().slice(0, 200) : "";
+  if (!title) return { error: "title が空です" };
+  const ev = { summary: title };
+  if (typeof input.location === "string" && input.location.trim()) ev.location = input.location.trim();
+  let label;
+  if (typeof input.all_day_date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(input.all_day_date)) {
+    const [y, m, d] = input.all_day_date.split("-").map(Number);
+    const day = new Date(y, m - 1, d), next = new Date(y, m - 1, d + 1);
+    ev.start = { date: ymd(day) }; ev.end = { date: ymd(next) };
+    label = `${fmtDay(day)} 終日`;
+  } else {
+    const st = localDateTime(input.start);
+    if (!st) return { error: "start は YYYY-MM-DDTHH:MM で指定してください（終日の予定なら all_day_date）" };
+    let en = localDateTime(input.end);
+    if (!en || en <= st) en = new Date(st.getTime() + (Number(input.duration_minutes) > 0 ? Number(input.duration_minutes) : 60) * 60000);
+    ev.start = { dateTime: `${ymd(st)}T${fmtHM(st)}:00`, timeZone: TZ };
+    ev.end = { dateTime: `${ymd(en)}T${fmtHM(en)}:00`, timeZone: TZ };
+    label = `${fmtDay(st)} ${fmtHM(st)}〜${fmtHM(en)}`;
+  }
+  try {
+    const made = await gapi("POST", "https://www.googleapis.com/calendar/v3/calendars/primary/events", ev);
+    addMsg("system memo", `📅 追加：${label} ${title}`);
+    return { result: `追加しました（${label} ${title}、id: ${made.id}）` };
+  } catch (err) { return googleError(err); }
+}
+async function calendarDelete(input) {
+  const id = typeof input?.id === "string" ? input.id.trim() : "";
+  if (!id) return { error: "id が空です" };
+  try {
+    await gapi("DELETE", `https://www.googleapis.com/calendar/v3/calendars/primary/events/${encodeURIComponent(id)}`);
+    addMsg("system memo", "📅 予定を削除しました");
+    return { result: "消しました" };
+  } catch (err) { return googleError(err); }
+}
+
+// --- Gmail ---
+function b64urlToText(data) {
+  try {
+    const bin = atob(String(data).replace(/-/g, "+").replace(/_/g, "/"));
+    return new TextDecoder().decode(Uint8Array.from(bin, (c) => c.charCodeAt(0)));
+  } catch { return ""; }
+}
+function textToB64url(text) {
+  const bytes = new TextEncoder().encode(text);
+  let bin = "";
+  bytes.forEach((b) => { bin += String.fromCharCode(b); });
+  return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+function b64(text) { const bytes = new TextEncoder().encode(text); let bin = ""; bytes.forEach((b) => { bin += String.fromCharCode(b); }); return btoa(bin); }
+function header(msg, name) { return (msg.payload?.headers || []).find((h) => h.name.toLowerCase() === name.toLowerCase())?.value || ""; }
+function shortFrom(from) { const m = /^\s*"?([^"<]*)"?\s*<([^>]+)>/.exec(from); return m ? (m[1].trim() || m[2]) : from; }
+async function gmailList(input) {
+  try {
+    const q = typeof input?.query === "string" && input.query.trim() ? input.query.trim() : "is:unread in:inbox";
+    const max = Math.min(10, Math.max(1, Math.round(Number(input?.max) || 5)));
+    const list = await gapi("GET", `https://gmail.googleapis.com/gmail/v1/users/me/messages?${new URLSearchParams({ q, maxResults: String(max) })}`);
+    const ids = (list.messages || []).map((m) => m.id);
+    if (!ids.length) return { result: q === "is:unread in:inbox" ? "未読メールはありません" : "見つかりませんでした" };
+    const msgs = await Promise.all(ids.map((id) => gapi("GET", `https://gmail.googleapis.com/gmail/v1/users/me/messages/${id}?format=metadata&metadataHeaders=From&metadataHeaders=Subject&metadataHeaders=Date`)));
+    const total = list.resultSizeEstimate && list.resultSizeEstimate > ids.length ? `（ほかにもあり、全${list.resultSizeEstimate}件ほど）` : "";
+    return {
+      result: msgs.map((m) => {
+        const d = new Date(Number(m.internalDate));
+        return `- (${m.id}) ${shortFrom(header(m, "From"))}「${header(m, "Subject") || "（件名なし）"}」${fmtDay(d)} ${fmtHM(d)}：${(m.snippet || "").slice(0, 120)}`;
+      }).join("\n") + total,
+    };
+  } catch (err) { return googleError(err); }
+}
+function extractBody(part) {
+  if (!part) return "";
+  if (part.mimeType === "text/plain" && part.body?.data) return b64urlToText(part.body.data);
+  for (const p of part.parts || []) { const t = extractBody(p); if (t) return t; }
+  if (part.mimeType === "text/html" && part.body?.data) {
+    return b64urlToText(part.body.data).replace(/<style[\s\S]*?<\/style>|<script[\s\S]*?<\/script>/gi, "").replace(/<[^>]+>/g, " ").replace(/&nbsp;/g, " ").replace(/\s+/g, " ");
+  }
+  return "";
+}
+async function gmailRead(input) {
+  const id = typeof input?.id === "string" ? input.id.trim() : "";
+  if (!id) return { error: "id が空です" };
+  try {
+    const m = await gapi("GET", `https://gmail.googleapis.com/gmail/v1/users/me/messages/${encodeURIComponent(id)}?format=full`);
+    const body = extractBody(m.payload).trim().slice(0, 4000);
+    return { result: `差出人：${header(m, "From")}\n件名：${header(m, "Subject")}\n日時：${header(m, "Date")}\n\n${body || m.snippet || "（本文なし）"}` };
+  } catch (err) { return googleError(err); }
+}
+async function gmailDraft(input) {
+  const text = typeof input?.body === "string" ? input.body : "";
+  if (!text.trim()) return { error: "body が空です" };
+  try {
+    let to = typeof input.to === "string" ? input.to.trim() : "";
+    let subject = typeof input.subject === "string" ? input.subject.trim() : "";
+    const extra = [];
+    let threadId;
+    if (typeof input.reply_to_id === "string" && input.reply_to_id.trim()) {
+      const orig = await gapi("GET", `https://gmail.googleapis.com/gmail/v1/users/me/messages/${encodeURIComponent(input.reply_to_id.trim())}?format=metadata&metadataHeaders=From&metadataHeaders=Reply-To&metadataHeaders=Subject&metadataHeaders=Message-ID&metadataHeaders=References`);
+      threadId = orig.threadId;
+      if (!to) to = header(orig, "Reply-To") || header(orig, "From");
+      if (!subject) { const os = header(orig, "Subject"); subject = /^re:/i.test(os) ? os : `Re: ${os}`; }
+      const mid = header(orig, "Message-ID");
+      if (mid) { extra.push(`In-Reply-To: ${mid}`); extra.push(`References: ${(header(orig, "References") + " " + mid).trim()}`); }
+    }
+    if (!to) return { error: "宛先（to）がわかりません" };
+    const mime = [
+      `To: ${to}`,
+      `Subject: =?UTF-8?B?${b64(subject)}?=`,
+      ...extra,
+      "MIME-Version: 1.0",
+      "Content-Type: text/plain; charset=UTF-8",
+      "Content-Transfer-Encoding: base64",
+      "",
+      b64(text),
+    ].join("\r\n");
+    await gapi("POST", "https://gmail.googleapis.com/gmail/v1/users/me/drafts", { message: { raw: textToB64url(mime), ...(threadId ? { threadId } : {}) } });
+    addMsg("system memo", `✉️ 下書きを保存しました：${subject || "（件名なし）"}（Gmail の下書きフォルダ）`);
+    return { result: "下書きを保存しました（送信はしていない）" };
+  } catch (err) { return googleError(err); }
+}
+
+// --- Google マップ ---
+let turnPlaces = []; // この返事で見つけた場所（吹き出しの下に地図リンクを出す）
+function currentPosition() {
+  return new Promise((resolve) => {
+    if (!navigator.geolocation) return resolve(null);
+    navigator.geolocation.getCurrentPosition(
+      (p) => resolve({ lat: p.coords.latitude, lng: p.coords.longitude }),
+      () => resolve(null),
+      { enableHighAccuracy: false, timeout: 8000, maximumAge: 300000 },
+    );
+  });
+}
+function distanceM(a, b) {
+  const R = 6371000, rad = Math.PI / 180;
+  const dLat = (b.lat - a.lat) * rad, dLng = (b.lng - a.lng) * rad;
+  const x = Math.sin(dLat / 2) ** 2 + Math.cos(a.lat * rad) * Math.cos(b.lat * rad) * Math.sin(dLng / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(x));
+}
+async function mapsSearch(input) {
+  const query = typeof input?.query === "string" ? input.query.trim() : "";
+  if (!query) return { error: "query が空です" };
+  const pos = input.near_me === false ? null : await currentPosition();
+  try {
+    const data = await relayPost("/maps/search", {
+      query, open_now: input.open_now === true, rank: input.sort === "distance" ? "distance" : undefined,
+      ...(pos ? { lat: pos.lat, lng: pos.lng } : {}),
+    });
+    const places = data.places || [];
+    if (!places.length) return { result: "見つかりませんでした" };
+    turnPlaces.push(...places);
+    const note = input.near_me !== false && !pos ? "（現在地を使えなかったため、場所の指定なしで検索）\n" : "";
+    return {
+      result: note + places.map((pl) => {
+        let dist = "";
+        if (pos && pl.lat != null) {
+          const m = distanceM(pos, { lat: pl.lat, lng: pl.lng });
+          dist = m < 1500 ? ` 徒歩約${Math.max(1, Math.round(m / 80))}分（${Math.round(m / 10) * 10}m）` : ` 約${(m / 1000).toFixed(1)}km`;
+        }
+        const rating = pl.rating ? ` ★${pl.rating}（${pl.ratings}件）` : "";
+        const open = pl.open_now === true ? " 営業中" : pl.open_now === false ? " 営業時間外" : "";
+        return `- ${pl.name}${pl.type ? `（${pl.type}）` : ""}${rating}${dist}${open} ${pl.address}`;
+      }).join("\n"),
+    };
+  } catch (err) {
+    if (err.status === 500 && /GOOGLE_MAPS_KEY/.test(err.message)) return { error: "中継サーバーに Google マップのキーが設定されていません。マスターに設定が必要だと伝えること" };
+    if (err.status === 0) return { error: "中継サーバーのURLが設定されていません" };
+    return { error: `マップの検索でエラー：${err.message}` };
+  }
+}
+function renderPlaces(bubble, places) {
+  if (!places.length) return;
+  const box = document.createElement("div");
+  box.className = "places";
+  box.append("地図：");
+  places.slice(0, 8).forEach((pl, i) => {
+    const a = document.createElement("a");
+    a.href = pl.url || `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(pl.name + " " + pl.address)}`;
+    a.target = "_blank"; a.rel = "noopener noreferrer";
+    a.textContent = pl.name;
+    if (i) box.append(" / ");
+    box.append(a);
+  });
+  bubble.appendChild(box);
+}
+
 // ===== やることリスト =====
 let todos = store.get("pallas.todos", []);
 function saveTodos() { store.set("pallas.todos", todos); renderTodos?.(); }
@@ -806,7 +1274,14 @@ const PLACE_NAMES = {
 };
 
 // 道具を実行して結果の文字列を返す（入力は念のため自分でも検証する）
-function runTool(name, input) {
+async function runTool(name, input) {
+  if (name === "calendar_list_events") return calendarList(input);
+  if (name === "calendar_add_event") return calendarAdd(input);
+  if (name === "calendar_delete_event") return calendarDelete(input);
+  if (name === "gmail_list") return gmailList(input);
+  if (name === "gmail_read") return gmailRead(input);
+  if (name === "gmail_create_draft") return gmailDraft(input);
+  if (name === "maps_search") return mapsSearch(input);
   if (name === "remember") {
     const text = typeof input?.text === "string" ? input.text.trim().slice(0, 200) : "";
     if (!text) return { error: "text が空です" };
@@ -1770,10 +2245,11 @@ async function send(text, { hidden = false } = {}) {
   const place = window.__pallasSceneId ? `[現在地: ${PLACE_NAMES[window.__pallasSceneId] || window.__pallasSceneId}]` : "";
   const tb = timersBlock();
   const td = todosBlock();
+  const gtag = googleConnected() ? "\n[Google: カレンダー・Gmail 接続中]" : "";
   // 朝はじめての会話なら、返事の最初に朝のあいさつを添えてもらう
   let morningTag = "";
   if (!hidden && morningDue()) { morningTag = "\n[今日はじめての会話（朝）]"; markMorningDone(); }
-  const userText = `[現在日時: ${nowLabel()}]${place}${tb ? "\n" + tb : ""}${td ? "\n" + td : ""}${morningTag}\n${text}`;
+  const userText = `[現在日時: ${nowLabel()}]${place}${tb ? "\n" + tb : ""}${td ? "\n" + td : ""}${gtag}${morningTag}\n${text}`;
   // 会話の最初だけ、これまでの記憶を添える（途中で前のメッセージを書き換えないため）
   const mem = history.length ? "" : memoryBlock();
   const userMsg = mem
@@ -1786,6 +2262,7 @@ async function send(text, { hidden = false } = {}) {
   const bubble = addMsg("assistant", "");
   const speaker = createSentenceSpeaker();
   let shownText = "";
+  turnPlaces = [];
 
   try {
     const modelKey = MODELS[settings.model] ? settings.model : "haiku";
@@ -1827,7 +2304,8 @@ async function send(text, { hidden = false } = {}) {
       for (const b of final.content) {
         if (b.type !== "tool_use") continue;
         const valid = b.input && typeof b.input === "object" && !Array.isArray(b.input);
-        const out = valid ? runTool(b.name, b.input) : { error: "INVALID_JSON: 入力を読み取れませんでした。もう一度呼び出してください" };
+        if (valid && /^(calendar|gmail|maps)_/.test(b.name)) setState("thinking", b.name.startsWith("maps") ? "地図で探しています…" : "Google を確認しています…");
+        const out = valid ? await runTool(b.name, b.input) : { error: "INVALID_JSON: 入力を読み取れませんでした。もう一度呼び出してください" };
         results.push({
           type: "tool_result",
           tool_use_id: b.id,
@@ -1856,7 +2334,10 @@ async function send(text, { hidden = false } = {}) {
       history = [...messages, { role: "assistant", content: contentForHistory(final.content) }];
       store.set("pallas.history", history);
       if (!shownText) bubble.remove();
-      else bubble.textContent = dedupeReply(stripParens(shownText)); // （）書きと言い直しを表示から取り除く
+      else {
+        bubble.textContent = dedupeReply(stripParens(shownText)); // （）書きと言い直しを表示から取り除く
+        renderPlaces(bubble, turnPlaces);
+      }
     }
   } catch (err) {
     speaker.flush();
@@ -1934,6 +2415,9 @@ $("stopBtn").addEventListener("click", () => { listenAfterTurn = false; stopAll(
 // 朝の報告がまだなら、パラスをタップすると朝の報告。それ以外はマイク
 $("drone").addEventListener("click", () => { if (morningDue()) startMorningGreeting(); else $("micBtn").click(); });
 $("morningChip").addEventListener("click", startMorningGreeting);
+$("googleChip").addEventListener("click", () => { store.remove("pallas.gNeedReconnect"); connectGoogle(); renderGoogleStatus(); });
+$("googleConnectBtn").addEventListener("click", connectGoogle);
+$("googleDisconnectBtn").addEventListener("click", disconnectGoogle);
 $("todoChip").addEventListener("click", () => { $("todoPanel").hidden = !$("todoPanel").hidden; });
 $("todoClose").addEventListener("click", () => { $("todoPanel").hidden = true; });
 // 朝、操作部品以外の場所をはじめてタップしたら朝の報告を始める
@@ -1959,6 +2443,9 @@ function syncSettingsForm() {
   $("autoReset").value = String(settings.autoResetMin);
   $("showTiming").checked = settings.showTiming;
   $("diagLog").checked = settings.diagLog;
+  $("googleClientId").value = settings.googleClientId || "";
+  renderGoogleStatus();
+  preloadGis();
   $("morningGreeting").checked = settings.morningGreeting !== false;
   $("ttsEngine").value = settings.ttsEngine;
   $("asrEngine").value = settings.asrEngine || "auto";
@@ -2110,6 +2597,7 @@ $("settingsForm").addEventListener("submit", () => {
   settings.autoResetMin = Number($("autoReset").value);
   settings.showTiming = $("showTiming").checked;
   settings.diagLog = $("diagLog").checked;
+  settings.googleClientId = $("googleClientId").value.trim();
   settings.morningGreeting = $("morningGreeting").checked;
   renderMorningChip();
   fishErrorShown = false;
@@ -2162,6 +2650,8 @@ renderHistory();
 renderTimers();
 renderTodos();
 renderMorningChip();
+renderGoogleStatus();
+preloadGis();
 setInterval(renderMorningChip, 60000);
 setTimeout(() => checkTimers(true), 1500);
 // レイアウト確定後（3D表示の読み込みで高さが変わる）にも最新の発言まで送る

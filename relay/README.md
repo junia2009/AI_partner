@@ -46,3 +46,36 @@ APIキーをブラウザに置きたくない場合は、Cloudflare の Worker �
 
 `fish-relay.js` 冒頭の `ALLOWED_ORIGINS` に、パラスを開くページのURL（オリジン）を追加してください。
 ここに無いページからの呼び出しは断るようにしています。
+
+## Google 連携（カレンダー・Gmail・マップ）の準備
+
+### 1. Google Cloud でプロジェクトを作る
+1. https://console.cloud.google.com を開き、新しいプロジェクト（例：`pallas`）を作る
+2. 「API とサービス」→「ライブラリ」で次の3つを有効にする
+   - Google Calendar API
+   - Gmail API
+   - Places API (New)（マップ検索を使う場合）
+
+### 2. ログインの設定（カレンダー・Gmail 用）
+1. 「Google Auth Platform」（または「OAuth 同意画面」）を開き、アプリ名 `パラス`、ユーザーの種類「外部」で作成
+2. 「対象」（テストユーザー）に、自分の Gmail アドレスを追加する（公開はしない＝テスト中のまま）
+3. 「クライアント」→「クライアントを作成」→ 種類「ウェブ アプリケーション」
+   - 承認済みの JavaScript 生成元：`https://junia2009.github.io`
+4. 表示された **クライアントID** と **クライアントシークレット** を控える
+
+テスト中のアプリは、Google の仕様で7日ほどでログインが切れます。そのときはパラスの画面の「Googleに再接続」を押してください。
+
+### 3. マップ検索のキー（使う場合）
+1. 「お支払い」で請求先アカウントを作り、カードを登録してプロジェクトに紐づける（無料枠の範囲なら請求はありません）
+2. 「API とサービス」→「認証情報」→「API キーを作成」。キーの制限で「Places API (New)」だけを許可する
+3. 使いすぎ防止：「割り当て」で Places API (New) の Text Search の1日の上限を 30 などに下げる
+
+### 4. 中継サーバーに鍵を登録する
+Cloudflare の Worker の **Settings → Variables and Secrets** に、種類「Secret」で次を追加して Deploy する。
+- `GOOGLE_CLIENT_ID`：クライアントID
+- `GOOGLE_CLIENT_SECRET`：クライアントシークレット
+- `GOOGLE_MAPS_KEY`：マップの API キー
+
+### 5. パラスの設定
+「Google 連携」にクライアントIDを入れて保存し、「Googleに接続」を押す。
+「このアプリは Google で確認されていません」と出たら「詳細」→「パラス（安全ではないページ）に移動」で進み、すべての項目にチェックを入れて許可する。
