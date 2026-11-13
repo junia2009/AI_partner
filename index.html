@@ -106,6 +106,8 @@
     padding: 6px 10px; font-size: 13px; color: var(--muted);
   }
   .icon-btn:hover { color: var(--text); border-color: var(--muted); }
+  .model-select { appearance: none; -webkit-appearance: none; padding-right: 10px; color: var(--accent); letter-spacing: .06em; }
+  .model-select option { background: var(--panel); color: var(--text); }
 
   /* 3Dモデル（パラス本体） */
   .stage { display: flex; flex-direction: column; align-items: center; padding: 0 16px 4px; }
@@ -257,6 +259,7 @@
 <header>
   <div class="brand">AI <span>PALLAS</span></div>
   <div class="head-actions">
+    <select class="icon-btn model-select" id="modelSelect" title="パラスの頭脳（モデル）" aria-label="モデル"></select>
     <button class="icon-btn" id="newChatBtn" title="会話をリセット">新しい会話</button>
     <button class="icon-btn" id="settingsBtn" title="設定">設定</button>
   </div>
@@ -308,6 +311,16 @@
     </div>
     <div class="field">
       <label class="check"><input id="autoListen" type="checkbox"> 話し終えたら自動で聞き取りを再開する（連続会話）</label>
+    </div>
+    <div class="field">
+      <label for="autoReset">しばらく話さなかったら新しい会話にする</label>
+      <select id="autoReset">
+        <option value="30">30分</option>
+        <option value="60">1時間</option>
+        <option value="180">3時間</option>
+        <option value="0">しない</option>
+      </select>
+      <div class="hint">毎回それまでの会話もまとめて送るため、会話が長いほど料金が上がります。</div>
     </div>
     <div class="dialog-actions">
       <button type="button" class="ghost" id="testVoiceBtn">声を試す</button>
@@ -367,7 +380,12 @@ const PALLAS_SYSTEM_PROMPT = `あなたは「パラス」。りょうさん専�
 - ユーザーの発言の先頭には [現在日時: ...] が付きます。これはアプリが自動で付けている情報なので、時間帯や曜日を踏まえた気遣いや先回りに使ってください。読み上げたり言及したりする必要はありません。
 - ユーザーの発言は音声認識の結果なので、誤変換が混じることがあります。文脈から意図を汲み取ってください。`;
 
-const MODEL = "claude-opus-5-5";
+// 使えるモデル。普段は Haiku（安い・速い）、じっくり相談したいときだけ上位モデルに切り替える
+const MODELS = {
+  haiku:  { id: "claude-haiku-5-5",  label: "Haiku",  desc: "普段使い（安い・速い）" },
+  sonnet: { id: "claude-sonnet-5-5", label: "Sonnet", desc: "バランス" },
+  opus:   { id: "claude-opus-5-5",   label: "Opus",   desc: "じっくり考える（高い）" },
+};
 
 // ===== 状態 =====
 const $ = (id) => document.getElementById(id);
@@ -377,7 +395,7 @@ const store = {
   remove(key) { try { localStorage.removeItem(key); } catch {} },
 };
 const settings = Object.assign(
-  { apiKey: "", voiceURI: "", rate: 1.1, pitch: 1.0, autoListen: false },
+  { apiKey: "", voiceURI: "", rate: 1.1, pitch: 1.0, autoListen: false, model: "haiku", autoResetMin: 60 },
   store.get("pallas.settings", {})
 );
 // API に送る会話履歴。アシスタントの応答は content ブロックをそのまま保存する（thinking ブロックも含めて変更しない）
@@ -590,6 +608,14 @@ async function send(text) {
     return;
   }
   stopSpeaking();
+  // しばらく話していなければ新しい会話にする（毎回送る履歴が減って料金が下がる）
+  const last = store.get("pallas.lastActivity", 0);
+  if (history.length && settings.autoResetMin > 0 && Date.now() - last > settings.autoResetMin * 60000) {
+    history = [];
+    store.remove("pallas.history");
+    addMsg("system", "前回から時間が空いたので、新しい会話を始めました");
+  }
+  store.set("pallas.lastActivity", Date.now());
   addMsg("user", text);
   const userMsg = { role: "user", content: `[現在日時: ${nowLabel()}]\n${text}` };
   const messages = [...history, userMsg];
@@ -601,17 +627,23 @@ async function send(text) {
   let shownText = "";
 
   try {
-    currentStream = c.beta.messages.stream({
-      model: MODEL,
+    const modelKey = MODELS[settings.model] ? settings.model : "haiku";
+    const params = {
+      model: MODELS[modelKey].id,
       max_tokens: 16000,
       system: PALLAS_SYSTEM_PROMPT,
       messages,
-      // 会話向けなので effort は low（応答の速さ優先）。思考は Claude Opus 5.5 では常に adaptive
+      // 会話向けなので effort は low（速さと料金を優先）
       output_config: { effort: "low" },
       cache_control: { type: "ephemeral" },
-      // 安全分類器で断られたときにサーバー側で別モデルに引き継ぐ
-      betas: ["server-side-fallback-2026-07-01"],
-      fallbacks: "default",
+    };
+    // Sonnet / Opus は、安全分類器で断られたときにサーバー側で別モデルへ引き継げる（Haiku は非対応）
+    if (modelKey !== "haiku") {
+      params.betas = ["server-side-fallback-2026-07-01"];
+      params.fallbacks = "default";
+    }
+    currentStream = c.beta.messages.stream({
+      ...params,
     });
 
     currentStream.on("text", (delta) => {
@@ -703,6 +735,7 @@ function syncSettingsForm() {
   $("rate").value = settings.rate;
   $("pitch").value = settings.pitch;
   $("autoListen").checked = settings.autoListen;
+  $("autoReset").value = String(settings.autoResetMin);
   $("rateVal").textContent = `×${Number(settings.rate).toFixed(2)}`;
   $("pitchVal").textContent = Number(settings.pitch).toFixed(2);
   loadVoices();
@@ -725,7 +758,23 @@ $("settingsForm").addEventListener("submit", () => {
   settings.rate = Number($("rate").value);
   settings.pitch = Number($("pitch").value);
   settings.autoListen = $("autoListen").checked;
+  settings.autoResetMin = Number($("autoReset").value);
   store.set("pallas.settings", settings);
+});
+
+// モデル切り替え（ヘッダー）
+for (const [key, m] of Object.entries(MODELS)) {
+  const o = document.createElement("option");
+  o.value = key;
+  o.textContent = m.label;
+  o.title = m.desc;
+  $("modelSelect").appendChild(o);
+}
+$("modelSelect").value = MODELS[settings.model] ? settings.model : "haiku";
+$("modelSelect").addEventListener("change", (e) => {
+  settings.model = e.target.value;
+  store.set("pallas.settings", settings);
+  addMsg("system", `頭脳を ${MODELS[settings.model].label}（${MODELS[settings.model].desc}）に切り替えました`);
 });
 
 // 起動
