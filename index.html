@@ -486,7 +486,9 @@ const PALLAS_SYSTEM_PROMPT = `あなたは「パラス」。りょうさん専�
 - ユーザーの発言の先頭には [現在日時: ...] が付きます。これはアプリが自動で付けている情報なので、時間帯や曜日を踏まえた気遣いや先回りに使ってください。読み上げたり言及したりする必要はありません。
 - ユーザーの発言は音声認識の結果なので、誤変換が混じることがあります。文脈から意図を汲み取ってください。
 - 内部用やシステム用のXMLタグは返答に含めないでください。
-- ツールを使うときは、先に短い一言を言ってからでも構いません。ツールで扱えないことは、推測で済ませずにそう伝えます。`;
+- ツール（記憶・タイマー・移動など）を使うときは、返事の言葉は一度だけにします。ツールの前に「星空へ行きましょう」と言ったなら、ツールのあとで同じことを言い直さず、そのまま終えます。ツールの前に何も言っていなければ、ツールのあとに短く一言だけ伝えます。
+- ツールの結果の文言を、そのまま読み上げたり言い換えて繰り返したりしません。
+- ツールで扱えないことは、推測で済ませずにそう伝えます。`;
 
 // 使えるモデル。普段は Haiku（安い・速い）、じっくり相談したいときだけ上位モデルに切り替える
 const MODELS = {
@@ -708,7 +710,7 @@ function runTool(name, input) {
     if (!PLACE_NAMES[place]) return { error: "place が不正です" };
     if (window.__pallasSceneId === place) return { result: `すでに${PLACE_NAMES[place]}にいます` };
     pendingTravel = place;
-    return { result: `返事のあと、${PLACE_NAMES[place]}へ移動します` };
+    return { result: `完了（${PLACE_NAMES[place]}への移動は、返事のあとに自動で行われる）` };
   }
   return { error: `不明なツール: ${name}` };
 }
@@ -754,7 +756,7 @@ function renderHistory() {
       const shown = t.replace(/^\[現在日時:[^\]]*\](\[現在地:[^\]]*\])?\s*(\[設定中のタイマー\]\n(- .*\n)*)?/, "").trim();
       if (shown) addMsg("user", shown);
     } else if (m.role === "assistant") {
-      const t = m.content.filter(b => b.type === "text").map(b => b.text).join("");
+      const t = dedupeReply(m.content.filter(b => b.type === "text").map(b => b.text).join(""));
       if (t) addMsg("assistant", t);
     }
   }
@@ -1115,9 +1117,39 @@ function stopSpeaking() {
 }
 
 // ストリーミング中のテキストを文の区切りごとに読み上げキューへ流す
+// 同じ内容の言い直し（「星空へ移動します。星空に移動します。」など）を見分けるための正規化
+function normSentence(x) {
+  return String(x).replace(/[。、，,．.！？!?\s「」『』（）()…ー〜~]/g, "").replace(/[へにをはがも]/g, "");
+}
+function isRepeat(sentence, seen) {
+  const n = normSentence(sentence);
+  if (n.length < 3) return false;
+  return seen.some((p) => p === n || (p.length >= 5 && n.length >= 5 && (p.includes(n) || n.includes(p))));
+}
+// 1つの返事の中で、同じ内容を2回言っていたら後の方を取り除く（表示用）
+function dedupeReply(text) {
+  const seen = [];
+  return (text.match(/[^。！？!?\n]+[。！？!?\n]*|[。！？!?\n]+/g) || [])
+    .filter((sent) => {
+      if (isRepeat(sent, seen)) return false;
+      const n = normSentence(sent);
+      if (n) seen.push(n);
+      return true;
+    })
+    .join("");
+}
+
 function createSentenceSpeaker() {
   let buf = "";
   let first = true;
+  const seen = [];
+  // 読み上げる前に、すでに言った内容の繰り返しなら飛ばす
+  const say = (x) => {
+    if (isRepeat(x, seen)) return;
+    const n = normSentence(x);
+    if (n) seen.push(n);
+    speak(x);
+  };
   return {
     push(delta) {
       buf += delta;
@@ -1126,17 +1158,17 @@ function createSentenceSpeaker() {
       if (first && (m = buf.match(/^([\s\S]{6,}?[、，,])/)) && !/[。！？!?\n]/.test(m[1])) {
         first = false;
         buf = buf.slice(m[1].length);
-        speak(m[1]);
+        say(m[1]);
       }
       while ((m = buf.match(/^([\s\S]*?[。！？!?\n])/))) {
         first = false;
         const sentence = m[1];
         buf = buf.slice(sentence.length);
-        if (sentence.trim()) speak(sentence);
+        if (sentence.trim()) say(sentence);
       }
     },
     flush() {
-      if (buf.trim()) speak(buf);
+      if (buf.trim()) say(buf);
       buf = "";
     },
   };
@@ -1638,7 +1670,8 @@ async function send(text) {
         results.push({
           type: "tool_result",
           tool_use_id: b.id,
-          content: out.error ?? out.result,
+          // 結果を受けて同じことを言い直さないよう、毎回ひとこと添える
+          content: out.error ?? `${out.result}。りょうさんにすでに伝えた内容なら、繰り返さずにそのまま返事を終えること。`,
           ...(out.error ? { is_error: true } : {}),
         });
       }
@@ -1662,6 +1695,7 @@ async function send(text) {
       history = [...messages, { role: "assistant", content: contentForHistory(final.content) }];
       store.set("pallas.history", history);
       if (!shownText) bubble.remove();
+      else bubble.textContent = dedupeReply(shownText); // 言い直しがあれば表示からも取り除く
     }
   } catch (err) {
     speaker.flush();
