@@ -307,6 +307,45 @@
   .msg.memo { color: var(--accent); }
   .google-row { display: flex; align-items: center; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
   .google-row .hint { flex: 1; margin: 0; min-width: 120px; }
+  /* 情報カード */
+  .info-panel {
+    position: fixed; z-index: 20; left: 50%; bottom: calc(84px + env(safe-area-inset-bottom));
+    transform: translateX(-50%); width: min(560px, calc(100vw - 24px)); max-height: min(62vh, 640px);
+    display: flex; flex-direction: column; overflow: hidden;
+    background: rgba(12,17,28,.94); border: 1px solid rgba(124,196,255,.3); border-radius: 18px;
+    box-shadow: 0 16px 40px rgba(0,0,0,.5); backdrop-filter: blur(10px);
+    animation: infoIn .25s ease-out;
+  }
+  .info-panel[hidden] { display: none; }
+  @keyframes infoIn { from { opacity: 0; transform: translate(-50%, 16px); } }
+  .info-head { display: flex; align-items: center; justify-content: space-between; padding: 10px 14px; border-bottom: 1px solid var(--line); }
+  .info-head b { font-size: 14px; letter-spacing: .06em; color: var(--accent); font-weight: 600; }
+  .info-head button { background: transparent; border: none; color: var(--muted); font-size: 15px; padding: 2px 6px; }
+  .info-map { height: 190px; flex: none; background: #0b0f17; }
+  .info-map[hidden] { display: none; }
+  .info-body { overflow-y: auto; padding: 4px 0; }
+  .info-item { display: flex; gap: 10px; padding: 10px 14px; border-bottom: 1px solid var(--line); }
+  .info-item:last-child { border-bottom: none; }
+  .info-num { flex: none; width: 22px; height: 22px; border-radius: 50%; background: var(--accent); color: #0b0f17; font-size: 12px; font-weight: 700; display: grid; place-items: center; margin-top: 1px; }
+  .info-main { flex: 1; min-width: 0; }
+  .info-name { font-size: 15px; font-weight: 600; word-break: break-word; }
+  .info-sub { font-size: 12px; color: var(--muted); margin-top: 2px; line-height: 1.6; word-break: break-word; }
+  .info-meta { display: flex; flex-wrap: wrap; gap: 6px 10px; font-size: 12px; margin-top: 4px; align-items: center; }
+  .info-meta .star { color: #ffd58a; }
+  .badge { font-size: 11px; padding: 1px 7px; border-radius: 999px; border: 1px solid; }
+  .badge.open { color: #7ee2a8; border-color: rgba(126,226,168,.5); }
+  .badge.closed { color: var(--muted); border-color: var(--line); }
+  .info-actions { display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
+  .info-actions a { font-size: 12px; text-decoration: none; color: var(--text); padding: 5px 10px; border-radius: 999px; border: 1px solid rgba(124,196,255,.35); background: rgba(124,196,255,.08); }
+  .info-actions a:hover { border-color: var(--accent); }
+  .info-day { padding: 8px 14px 2px; font-size: 12px; color: var(--accent); letter-spacing: .08em; }
+  .info-time { flex: none; width: 92px; font-size: 13px; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .info-empty { padding: 16px 14px; color: var(--muted); font-size: 13px; }
+  .pin { width: 22px; height: 22px; border-radius: 50%; background: var(--accent); color: #0b0f17; font: 700 12px/22px system-ui, sans-serif; text-align: center; border: 2px solid #0b0f17; box-shadow: 0 0 8px rgba(124,196,255,.7); }
+  .pin.me { width: 14px; height: 14px; background: #4ea1ff; border: 2px solid #fff; box-shadow: 0 0 0 6px rgba(78,161,255,.25); }
+  .leaflet-container { background: #0b0f17; font: inherit; }
+  .leaflet-control-attribution { background: rgba(11,15,23,.7) !important; color: var(--muted) !important; font-size: 9px !important; }
+  .leaflet-control-attribution a { color: var(--muted) !important; }
   .places { margin-top: 8px; padding-top: 6px; border-top: 1px solid rgba(124,196,255,.15); font-size: 12px; color: var(--muted); line-height: 1.8; white-space: normal; }
   .places a { color: var(--accent); text-decoration: none; }
   .places a:hover { text-decoration: underline; }
@@ -352,6 +391,16 @@
 
 <main id="log" aria-live="polite"></main>
 </div>
+
+<!-- 調べた結果を見せる情報カード（お店・予定・メール） -->
+<section class="info-panel" id="infoPanel" hidden aria-live="polite">
+  <div class="info-head">
+    <b id="infoTitle"></b>
+    <button type="button" id="infoClose" aria-label="閉じる">✕</button>
+  </div>
+  <div class="info-map" id="infoMap" hidden></div>
+  <div class="info-body" id="infoBody"></div>
+</section>
 
 <footer>
   <form class="composer" id="composer">
@@ -541,6 +590,7 @@ const PALLAS_SYSTEM_PROMPT = `あなたは「パラス」。マスター専属�
 - 返信を頼まれたら gmail_create_draft で下書きを保存します。メールを送信する道具はありません。「下書きに入れておきました。確認して送ってください」と伝えます。
 - お店や場所を聞かれたら maps_search で探します。おすすめは2〜3件に絞り、評価・近さ・営業中かを短く伝えます。住所やURLは読み上げません（地図のリンクは画面に出ます）。
 - 朝の報告では、Google につながっていれば calendar_list_events で今日の予定も確かめて伝えます。
+- お店・予定・メールを調べると、詳しい一覧（地図や時刻、ボタン）が画面のカードに表示されます。声では要点だけを伝え、「詳しくは画面に出しています」と添える程度にします。
 
 # 場所
 - あなたとマスターは、電脳空間・夜の街の上空・星空・雲の上（朝焼け・青空・夕焼け）・雨の夜のどこかにいます。今いる場所は発言の先頭の [現在地] でわかります。
@@ -1003,6 +1053,15 @@ async function calendarList(input) {
     const q = new URLSearchParams({ timeMin: start.toISOString(), timeMax: end.toISOString(), singleEvents: "true", orderBy: "startTime", maxResults: "40", timeZone: TZ });
     const data = await gapi("GET", `https://www.googleapis.com/calendar/v3/calendars/primary/events?${q}`);
     const items = data.items || [];
+    const rangeTitle = `${fmtDay(start)}${days > 1 ? `から${days}日間` : ""}の予定`;
+    showEventsPanel(rangeTitle, items.map((ev) => {
+      if (ev.start?.date) {
+        const [y, m, d] = ev.start.date.split("-").map(Number);
+        return { day: fmtDay(new Date(y, m - 1, d)), time: "終日", title: ev.summary || "（無題）", location: ev.location || "", link: ev.htmlLink };
+      }
+      const s1 = new Date(ev.start.dateTime), e1 = new Date(ev.end.dateTime);
+      return { day: fmtDay(s1), time: `${fmtHM(s1)}〜${fmtHM(e1)}`, title: ev.summary || "（無題）", location: ev.location || "", link: ev.htmlLink };
+    }));
     if (!items.length) return { result: `${fmtDay(start)}${days > 1 ? `から${days}日間` : ""}の予定はありません` };
     return {
       result: items.map((ev) => {
@@ -1075,9 +1134,16 @@ async function gmailList(input) {
     const max = Math.min(10, Math.max(1, Math.round(Number(input?.max) || 5)));
     const list = await gapi("GET", `https://gmail.googleapis.com/gmail/v1/users/me/messages?${new URLSearchParams({ q, maxResults: String(max) })}`);
     const ids = (list.messages || []).map((m) => m.id);
-    if (!ids.length) return { result: q === "is:unread in:inbox" ? "未読メールはありません" : "見つかりませんでした" };
+    if (!ids.length) {
+      showMailsPanel(q === "is:unread in:inbox" ? "未読メール" : `メール：${q}`, []);
+      return { result: q === "is:unread in:inbox" ? "未読メールはありません" : "見つかりませんでした" };
+    }
     const msgs = await Promise.all(ids.map((id) => gapi("GET", `https://gmail.googleapis.com/gmail/v1/users/me/messages/${id}?format=metadata&metadataHeaders=From&metadataHeaders=Subject&metadataHeaders=Date`)));
     const total = list.resultSizeEstimate && list.resultSizeEstimate > ids.length ? `（ほかにもあり、全${list.resultSizeEstimate}件ほど）` : "";
+    showMailsPanel(q === "is:unread in:inbox" ? "未読メール" : `メール：${q}`, msgs.map((m) => {
+      const d = new Date(Number(m.internalDate));
+      return { id: m.id, from: shortFrom(header(m, "From")), subject: header(m, "Subject") || "（件名なし）", when: `${fmtDay(d)} ${fmtHM(d)}`, snippet: (m.snippet || "").slice(0, 90) };
+    }));
     return {
       result: msgs.map((m) => {
         const d = new Date(Number(m.internalDate));
@@ -1167,6 +1233,7 @@ async function mapsSearch(input) {
     const places = data.places || [];
     if (!places.length) return { result: "見つかりませんでした" };
     turnPlaces.push(...places);
+    showPlacesPanel(query, places, pos);
     const note = input.near_me !== false && !pos ? "（現在地を使えなかったため、場所の指定なしで検索）\n" : "";
     return {
       result: note + places.map((pl) => {
@@ -1186,6 +1253,142 @@ async function mapsSearch(input) {
     return { error: `マップの検索でエラー：${err.message}` };
   }
 }
+// ===== 情報カード =====
+function el(tag, cls, text) {
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (text != null) e.textContent = text;
+  return e;
+}
+function link(text, href) {
+  const a = el("a", null, text);
+  a.href = href; a.target = "_blank"; a.rel = "noopener noreferrer";
+  return a;
+}
+let infoMap = null;
+function closeInfoPanel() {
+  $("infoPanel").hidden = true;
+  if (infoMap) { infoMap.remove(); infoMap = null; }
+}
+function openInfoPanel(title, buildBody) {
+  if (infoMap) { infoMap.remove(); infoMap = null; }
+  $("infoTitle").textContent = title;
+  $("infoMap").hidden = true;
+  const body = $("infoBody");
+  body.innerHTML = "";
+  buildBody(body);
+  body.scrollTop = 0;
+  $("infoPanel").hidden = false;
+}
+// 地図は Leaflet（無料・オープンソース）＋ OpenStreetMap / CARTO の暗い地図。使うときだけ読み込む
+let leafletReady = null;
+function loadLeaflet() {
+  if (leafletReady) return leafletReady;
+  leafletReady = new Promise((resolve, reject) => {
+    const css = document.createElement("link");
+    css.rel = "stylesheet";
+    css.href = "https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css";
+    document.head.appendChild(css);
+    const sc = document.createElement("script");
+    sc.src = "https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js";
+    sc.onload = () => resolve(window.L);
+    sc.onerror = () => { leafletReady = null; reject(new Error("地図を読み込めませんでした")); };
+    document.head.appendChild(sc);
+  });
+  return leafletReady;
+}
+async function drawPlacesMap(places, pos) {
+  const pts = places.filter((p) => p.lat != null);
+  if (!pts.length) return;
+  let L;
+  try { L = await loadLeaflet(); } catch { return; }
+  if ($("infoPanel").hidden) return;
+  const box = $("infoMap");
+  box.hidden = false;
+  if (infoMap) infoMap.remove();
+  infoMap = L.map(box, { zoomControl: false, attributionControl: true });
+  L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png", {
+    maxZoom: 19, subdomains: "abcd",
+    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> &copy; <a href="https://carto.com/attributions">CARTO</a>',
+  }).addTo(infoMap);
+  const bounds = [];
+  pts.forEach((p) => {
+    const i = places.indexOf(p) + 1;
+    L.marker([p.lat, p.lng], { icon: L.divIcon({ className: "", html: `<div class="pin">${i}</div>`, iconSize: [22, 22], iconAnchor: [11, 11] }) })
+      .addTo(infoMap).on("click", () => {
+        const item = $("infoBody").querySelectorAll(".info-item")[i - 1];
+        item?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+      });
+    bounds.push([p.lat, p.lng]);
+  });
+  if (pos) {
+    L.marker([pos.lat, pos.lng], { icon: L.divIcon({ className: "", html: '<div class="pin me"></div>', iconSize: [14, 14], iconAnchor: [7, 7] }) }).addTo(infoMap);
+    bounds.push([pos.lat, pos.lng]);
+  }
+  infoMap.fitBounds(bounds, { padding: [24, 24], maxZoom: 16 });
+}
+function walkLabel(m) {
+  return m < 1500 ? `徒歩約${Math.max(1, Math.round(m / 80))}分（${Math.round(m / 10) * 10}m）` : `約${(m / 1000).toFixed(1)}km`;
+}
+function showPlacesPanel(query, places, pos) {
+  openInfoPanel(`🗺 ${query}`, (body) => {
+    places.forEach((pl, idx) => {
+      const item = el("div", "info-item");
+      item.appendChild(el("div", "info-num", String(idx + 1)));
+      const main = el("div", "info-main");
+      main.appendChild(el("div", "info-name", pl.name));
+      const meta = el("div", "info-meta");
+      if (pl.rating) { const st = el("span", "star", `★${pl.rating}`); meta.appendChild(st); meta.appendChild(el("span", null, `（${pl.ratings}件）`)); }
+      if (pos && pl.lat != null) meta.appendChild(el("span", null, walkLabel(distanceM(pos, { lat: pl.lat, lng: pl.lng }))));
+      if (pl.open_now === true) meta.appendChild(el("span", "badge open", "営業中"));
+      if (pl.open_now === false) meta.appendChild(el("span", "badge closed", "営業時間外"));
+      main.appendChild(meta);
+      main.appendChild(el("div", "info-sub", [pl.type, pl.address].filter(Boolean).join(" ・ ")));
+      const acts = el("div", "info-actions");
+      acts.appendChild(link("地図で開く", pl.url || `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(pl.name + " " + pl.address)}`));
+      if (pl.lat != null) acts.appendChild(link("経路", `https://www.google.com/maps/dir/?api=1&destination=${pl.lat},${pl.lng}&travelmode=walking`));
+      main.appendChild(acts);
+      item.appendChild(main);
+      body.appendChild(item);
+    });
+  });
+  drawPlacesMap(places, pos);
+}
+function showEventsPanel(title, events) {
+  openInfoPanel(`📅 ${title}`, (body) => {
+    if (!events.length) { body.appendChild(el("div", "info-empty", "予定はありません")); return; }
+    let lastDay = "";
+    for (const ev of events) {
+      if (ev.day !== lastDay) { body.appendChild(el("div", "info-day", ev.day)); lastDay = ev.day; }
+      const item = el("div", "info-item");
+      item.appendChild(el("div", "info-time", ev.time));
+      const main = el("div", "info-main");
+      main.appendChild(el("div", "info-name", ev.title));
+      if (ev.location) main.appendChild(el("div", "info-sub", `📍 ${ev.location}`));
+      if (ev.link) { const acts = el("div", "info-actions"); acts.appendChild(link("カレンダーで開く", ev.link)); main.appendChild(acts); }
+      item.appendChild(main);
+      body.appendChild(item);
+    }
+  });
+}
+function showMailsPanel(title, mails) {
+  openInfoPanel(`✉️ ${title}`, (body) => {
+    if (!mails.length) { body.appendChild(el("div", "info-empty", "メールはありません")); return; }
+    for (const m of mails) {
+      const item = el("div", "info-item");
+      const main = el("div", "info-main");
+      main.appendChild(el("div", "info-name", m.subject));
+      main.appendChild(el("div", "info-sub", `${m.from} ・ ${m.when}`));
+      if (m.snippet) main.appendChild(el("div", "info-sub", m.snippet));
+      const acts = el("div", "info-actions");
+      acts.appendChild(link("Gmail で開く", `https://mail.google.com/mail/u/0/#all/${m.id}`));
+      main.appendChild(acts);
+      item.appendChild(main);
+      body.appendChild(item);
+    }
+  });
+}
+
 function renderPlaces(bubble, places) {
   if (!places.length) return;
   const box = document.createElement("div");
@@ -2415,6 +2618,8 @@ $("stopBtn").addEventListener("click", () => { listenAfterTurn = false; stopAll(
 // 朝の報告がまだなら、パラスをタップすると朝の報告。それ以外はマイク
 $("drone").addEventListener("click", () => { if (morningDue()) startMorningGreeting(); else $("micBtn").click(); });
 $("morningChip").addEventListener("click", startMorningGreeting);
+$("infoClose").addEventListener("click", closeInfoPanel);
+window.addEventListener("keydown", (e) => { if (e.key === "Escape" && !$("infoPanel").hidden) closeInfoPanel(); });
 $("googleChip").addEventListener("click", () => { store.remove("pallas.gNeedReconnect"); connectGoogle(); renderGoogleStatus(); });
 $("googleConnectBtn").addEventListener("click", connectGoogle);
 $("googleDisconnectBtn").addEventListener("click", disconnectGoogle);
@@ -2431,6 +2636,7 @@ $("newChatBtn").addEventListener("click", () => {
   stopAll();
   history = [];
   store.remove("pallas.history");
+  closeInfoPanel();
   renderHistory();
   addMsg("system", "新しい会話を始めました");
 });
