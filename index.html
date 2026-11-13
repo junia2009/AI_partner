@@ -768,6 +768,17 @@ function silentWavUrl() {
 // iPhone・iPad かどうか（iPadOS は Mac のふりをするので、タッチ対応かも見る）
 const IS_IOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
 
+// iPhone・iPad は、音を出すと「再生モード」になり、数分のあいだマイクに無音しか入らなくなる。
+// Safari の Audio Session API で「再生も録音もするモード」に固定して、話したあとすぐ聞けるようにする
+function useConversationAudioMode() {
+  try {
+    if ("audioSession" in navigator && navigator.audioSession.type !== "play-and-record") {
+      navigator.audioSession.type = "play-and-record";
+    }
+  } catch {}
+}
+useConversationAudioMode();
+
 function unlockFishAudio() {
   try {
     // 音量を測ってパラスの目や波紋を声に合わせるための仕組み（Web Audio）。
@@ -862,6 +873,7 @@ function playBlob(blob) {
     fishAudio.onended = () => { cleanup(); resolve(); };
     fishAudio.onerror = () => { cleanup(); reject(new Error("音声を再生できませんでした")); };
     stopCurrentAudio = () => { fishAudio.pause(); cleanup(); resolve(); };
+    useConversationAudioMode();
     fishAudio.src = url;
     audioCtx?.resume();
     setState("speaking", "話しています");
@@ -999,7 +1011,8 @@ function diag(msg) {
 function audioStateText() {
   const a = `プレーヤー:${fishAudio.getAttribute("src") ? "音声あり" : "空"}/${fishAudio.paused ? "停止" : "再生中"}`;
   const t = synth ? `標準の声:${synth.speaking ? "話し中" : "-"}${synth.pending ? "/待ちあり" : ""}` : "";
-  return `${a} ${t}${audioCtx ? ` WebAudio:${audioCtx.state}` : ""}`;
+  const mode = "audioSession" in navigator ? ` モード:${navigator.audioSession.type}` : " モード:指定不可";
+  return `${a} ${t}${audioCtx ? ` WebAudio:${audioCtx.state}` : ""}${mode}`;
 }
 
 function startListening({ auto = false } = {}) {
@@ -1134,6 +1147,7 @@ function startListening({ auto = false } = {}) {
 
   // iPhone・iPad は、音を鳴らす準備（読み上げや音声再生）が動いていると、マイクが音を拾えないことがある。
   // 聞き取りの前に音まわりを止め、切り替わるのを少し待ってから開始する（話し終えて返事を流すときに再開する）
+  useConversationAudioMode();
   const audioWasActive = (synth && (synth.speaking || synth.pending)) || (audioCtx && audioCtx.state === "running") || !fishAudio.paused;
   try { synth?.cancel(); } catch {}
   if (!fishPlaying) releaseFishAudio(); else { try { fishAudio.pause(); } catch {} }
