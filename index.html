@@ -445,6 +445,10 @@ const PALLAS_SYSTEM_PROMPT = `あなたは「パラス」。りょうさん専�
 - 「忘れて」と言われたり、覚えている内容が古くなったりしたら forget ツールで消します。内容が変わったときは、古いものを消してから新しいものを保存します。
 - 記憶は、話の流れに自然に活かします。「記憶によると」のような言い方はせず、知っている相手として振る舞います。
 
+# 会話の終わり
+- りょうさんが会話を終えたがっているとき（「もういいよ」「ありがとう、終わり」「またね」「おやすみ」「ちょっと静かにして」など）は end_conversation ツールを呼び、短いあいさつで締めます。
+- 途中の「ありがとう」だけでは終わりと決めつけません。話の流れから、終える気持ちがはっきりしているときだけ呼びます。
+
 # 補足
 - ユーザーの発言の先頭には [現在日時: ...] が付きます。これはアプリが自動で付けている情報なので、時間帯や曜日を踏まえた気遣いや先回りに使ってください。読み上げたり言及したりする必要はありません。
 - ユーザーの発言は音声認識の結果なので、誤変換が混じることがあります。文脈から意図を汲み取ってください。
@@ -515,6 +519,11 @@ const TOOLS = [
     },
     eager_input_streaming: true,
   },
+  {
+    name: "end_conversation",
+    description: "りょうさんが会話を終えたがっているとき（「もういいよ」「終わり」「またね」「おやすみ」「ちょっと静かにして」など）に呼ぶ。返事のあと、自動で聞き取りを再開しないようにする。",
+    input_schema: { type: "object", properties: {}, additionalProperties: false },
+  },
 ];
 
 // 道具を実行して結果の文字列を返す（入力は念のため自分でも検証する）
@@ -540,9 +549,14 @@ function runTool(name, input) {
     addMsg("system memo", `忘れました：${m.text}`);
     return { result: `消しました（id: ${id}）` };
   }
+  if (name === "end_conversation") {
+    endConversationRequested = true;
+    return { result: "会話を終えます。返事のあと、聞き取りは再開しません。" };
+  }
   return { error: `不明なツール: ${name}` };
 }
 
+let endConversationRequested = false; // 会話を終える合図（返事のあと、連続会話の聞き取りをしない）
 let history = store.get("pallas.history", []);
 // 人格設定（システムプロンプト）が変わると、保存済みの履歴が API で使えなくなることがあるのでリセットする
 {
@@ -949,7 +963,7 @@ let recogActive = false;
 let listenAfterTurn = false;
 let silentStarts = 0; // 開始したのに何も返ってこなかった回数（音声認識が動かないブラウザの検出用） // 返事の処理中にマイクが押されたら、処理を止めたあとで聞き取りを始める
 
-function startListening() {
+function startListening({ auto = false } = {}) {
   if (!Recognition) {
     addMsg("error", "このブラウザは音声認識に対応していません。Chrome か Safari を使うか、文字で入力してください。");
     return;
@@ -997,7 +1011,8 @@ function startListening() {
     const text = (finalText + latestInterim).trim();
     if (text) { send(text); return; }
     setState("idle", "マイクを押して話しかけてください");
-    if (!cancelled && (errorCode === "no-speech" || (gotStart && !errorCode))) {
+    // 連続会話で自動的に聞き始めたときは、黙っていても何も言わずに待機へ戻る
+    if (!cancelled && !(auto && gotStart && !gotResult) && (errorCode === "no-speech" || (gotStart && !errorCode))) {
       addMsg("system", "声が聞き取れませんでした。もう一度マイクを押して話しかけてください。");
       // 開始はしたのに一度も結果が来ない：その端末・ブラウザの音声認識が動いていない可能性が高い
       if (gotStart && !gotResult && !errorCode && ++silentStarts >= 2) {
@@ -1270,7 +1285,12 @@ function afterTurn() {
   showTiming();
   if (proudPending) { proudPending = false; window.dispatchEvent(new Event("pallas:proud")); }
   setState("idle", "マイクを押して話しかけてください");
-  if (settings.autoListen && Recognition) startListening();
+  if (endConversationRequested) {
+    endConversationRequested = false;
+    if (settings.autoListen) addMsg("system", "会話を終えました。マイクを押すとまた話せます。");
+    return;
+  }
+  if (settings.autoListen && Recognition) startListening({ auto: true });
 }
 
 function stopAll() {
