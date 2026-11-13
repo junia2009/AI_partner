@@ -4,6 +4,14 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#0b0f17">
+<!-- PWA：ホーム画面に追加してアプリとして使う -->
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" type="image/png" sizes="32x32" href="icons/favicon-32.png">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="パラス">
 <title>AIパラス</title>
 <script type="importmap">
 {
@@ -203,6 +211,7 @@
   .msg.system { align-self: center; color: var(--muted); font-size: 12px; background: transparent; padding: 2px; }
   .msg.error { align-self: center; color: var(--danger); font-size: 13px; background: transparent; }
   .msg.interim { opacity: .55; }
+  .msg.timing { font-size: 11px; letter-spacing: .02em; opacity: .75; }
 
   /* 入力 */
   footer {
@@ -259,6 +268,7 @@
 <header>
   <div class="brand">AI <span>PALLAS</span></div>
   <div class="head-actions">
+    <button class="icon-btn" id="installBtn" title="ホーム画面にアプリとして追加" hidden>アプリに追加</button>
     <select class="icon-btn model-select" id="modelSelect" title="パラスの頭脳（モデル）" aria-label="モデル"></select>
     <button class="icon-btn" id="newChatBtn" title="会話をリセット">新しい会話</button>
     <button class="icon-btn" id="settingsBtn" title="設定">設定</button>
@@ -338,6 +348,9 @@
       <label class="check"><input id="autoListen" type="checkbox"> 話し終えたら自動で聞き取りを再開する（連続会話）</label>
     </div>
     <div class="field">
+      <label class="check"><input id="showTiming" type="checkbox"> 反応時間を表示する（遅い原因を調べる用）</label>
+    </div>
+    <div class="field">
       <label for="autoReset">しばらく話さなかったら新しい会話にする</label>
       <select id="autoReset">
         <option value="30">30分</option>
@@ -403,7 +416,8 @@ const PALLAS_SYSTEM_PROMPT = `あなたは「パラス」。りょうさん専�
 
 # 補足
 - ユーザーの発言の先頭には [現在日時: ...] が付きます。これはアプリが自動で付けている情報なので、時間帯や曜日を踏まえた気遣いや先回りに使ってください。読み上げたり言及したりする必要はありません。
-- ユーザーの発言は音声認識の結果なので、誤変換が混じることがあります。文脈から意図を汲み取ってください。`;
+- ユーザーの発言は音声認識の結果なので、誤変換が混じることがあります。文脈から意図を汲み取ってください。
+- 内部用やシステム用のXMLタグは返答に含めないでください。`;
 
 // 使えるモデル。普段は Haiku（安い・速い）、じっくり相談したいときだけ上位モデルに切り替える
 const MODELS = {
@@ -420,12 +434,23 @@ const store = {
   remove(key) { try { localStorage.removeItem(key); } catch {} },
 };
 const settings = Object.assign(
-  { apiKey: "", voiceURI: "", rate: 1.1, pitch: 1.0, autoListen: false, model: "haiku", autoResetMin: 60,
+  { apiKey: "", voiceURI: "", rate: 1.1, pitch: 1.0, autoListen: false, model: "haiku", autoResetMin: 60, showTiming: true,
     ttsEngine: "browser", fishRelayUrl: "", fishApiKey: "", fishVoice: "45c5d3723c9c42f598e4776dcfd5f02d", fishVoiceCustom: "" },
   store.get("pallas.settings", {})
 );
 // API に送る会話履歴。アシスタントの応答は content ブロックをそのまま保存する（thinking ブロックも含めて変更しない）
 let history = store.get("pallas.history", []);
+// 人格設定（システムプロンプト）が変わると、保存済みの履歴が API で使えなくなることがあるのでリセットする
+{
+  let h = 0;
+  for (const ch of PALLAS_SYSTEM_PROMPT) h = (h * 31 + ch.charCodeAt(0)) | 0;
+  const sig = String(h);
+  if (store.get("pallas.promptSig", null) !== sig) {
+    history = [];
+    store.remove("pallas.history");
+    store.set("pallas.promptSig", sig);
+  }
+}
 let client = null;
 let clientKey = "";
 let currentStream = null;
@@ -548,7 +573,7 @@ function speakBrowser(text, track = true) {
   u.rate = settings.rate;
   u.pitch = settings.pitch;
   if (track) speakQueue++;
-  u.onstart = () => setState("speaking", "話しています");
+  u.onstart = () => { setState("speaking", "話しています"); markFirstAudio(); };
   const done = () => {
     liveUtterances.delete(u);
     if (track) {
@@ -710,7 +735,7 @@ function playBlob(blob) {
     fishAudio.src = url;
     audioCtx?.resume();
     setState("speaking", "話しています");
-    fishAudio.play().catch((e) => { cleanup(); reject(e); });
+    fishAudio.play().then(markFirstAudio).catch((e) => { cleanup(); reject(e); });
   });
 }
 
@@ -779,11 +804,19 @@ function stopSpeaking() {
 // ストリーミング中のテキストを文の区切りごとに読み上げキューへ流す
 function createSentenceSpeaker() {
   let buf = "";
+  let first = true;
   return {
     push(delta) {
       buf += delta;
       let m;
+      // 最初の1回だけは読点でも区切って、早く話し始める（短すぎる切れ端は避ける）
+      if (first && (m = buf.match(/^([\s\S]{6,}?[、，,])/)) && !/[。！？!?\n]/.test(m[1])) {
+        first = false;
+        buf = buf.slice(m[1].length);
+        speak(m[1]);
+      }
       while ((m = buf.match(/^([\s\S]*?[。！？!?\n])/))) {
+        first = false;
         const sentence = m[1];
         buf = buf.slice(sentence.length);
         if (sentence.trim()) speak(sentence);
@@ -798,6 +831,9 @@ function createSentenceSpeaker() {
 
 // ===== 音声認識 =====
 const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+const SILENCE_MS = 800;   // この時間、新しい言葉が来なければ話し終わったとみなす
+let lastSpeechAt = 0;     // 最後に言葉を認識した時刻（反応時間の計測用）
+let recogEndAt = 0;       // 音声認識が終わった時刻
 let recognition = null;
 let listening = false;
 let interimEl = null;
@@ -814,6 +850,9 @@ function startListening() {
   recognition.interimResults = true;
   recognition.continuous = false;
   let finalText = "";
+  let latestInterim = "";
+  let silenceTimer = null;
+  lastSpeechAt = 0;
 
   recognition.onstart = () => { listening = true; setState("listening", "聞いています…"); };
   recognition.onresult = (e) => {
@@ -823,6 +862,11 @@ function startListening() {
       if (r.isFinal) finalText += r[0].transcript;
       else interim += r[0].transcript;
     }
+    latestInterim = interim;
+    // ブラウザの判断を待たず、一定時間あたらしい言葉が来なければ話し終わったとみなす
+    lastSpeechAt = performance.now();
+    clearTimeout(silenceTimer);
+    silenceTimer = setTimeout(() => { if (listening) recognition.stop(); }, SILENCE_MS);
     const shown = finalText + interim;
     if (!interimEl) interimEl = addMsg("user interim", shown);
     else interimEl.textContent = shown;
@@ -837,9 +881,12 @@ function startListening() {
   };
   recognition.onend = () => {
     listening = false;
+    clearTimeout(silenceTimer);
     interimEl?.remove();
     interimEl = null;
-    const text = finalText.trim();
+    recogEndAt = performance.now();
+    // 途中で止めた場合、最後の部分が「確定前」のまま残ることがあるので、それも使う
+    const text = (finalText + latestInterim).trim();
     if (text) send(text);
     else setState("idle", "マイクを押して話しかけてください");
   };
@@ -847,6 +894,26 @@ function startListening() {
 }
 function stopListening() {
   if (recognition && listening) recognition.stop();
+}
+
+// ===== 反応時間の計測 =====
+let timing = null;
+function markFirstAudio() {
+  if (!timing || timing.firstAudio) return;
+  timing.firstAudio = performance.now();
+  showTiming();
+}
+function showTiming() {
+  if (!timing || timing.shown || !settings.showTiming) return;
+  timing.shown = true;
+  const sec = (a, b) => (a && b ? ((b - a) / 1000).toFixed(1) + "秒" : "—");
+  const parts = [];
+  if (timing.lastSpeech) parts.push(`話し終わり判定 ${sec(timing.lastSpeech, timing.recogEnd)}`);
+  parts.push(`文字が出るまで ${sec(timing.send, timing.firstText)}`);
+  parts.push(`声が出るまで ${sec(timing.firstText, timing.firstAudio)}`);
+  const start = timing.lastSpeech || timing.send;
+  parts.push(`合計 ${sec(start, timing.firstAudio || timing.firstText)}`);
+  addMsg("system timing", "⏱ " + parts.join(" ／ "));
 }
 
 // ===== Claude との会話 =====
@@ -891,6 +958,14 @@ async function send(text) {
   }
   store.set("pallas.lastActivity", Date.now());
   addMsg("user", text);
+  // 音声入力の直後なら、話し終わりの判定にかかった時間も記録する
+  const fromVoice = recogEndAt && performance.now() - recogEndAt < 1500;
+  timing = {
+    send: performance.now(),
+    lastSpeech: fromVoice ? lastSpeechAt : 0,
+    recogEnd: fromVoice ? recogEndAt : 0,
+  };
+  recogEndAt = 0;
   const userMsg = { role: "user", content: `[現在日時: ${nowLabel()}]\n${text}` };
   const messages = [...history, userMsg];
 
@@ -911,6 +986,9 @@ async function send(text) {
       output_config: { effort: "low" },
       cache_control: { type: "ephemeral" },
     };
+    // Haiku は普段の会話用なので「考える処理」を切って、最初の文字を早く出す
+    // （Sonnet / Opus は今のまま考える。Opus は切れない仕様）
+    if (modelKey === "haiku") params.thinking = { type: "disabled" };
     // Sonnet / Opus は、安全分類器で断られたときにサーバー側で別モデルへ引き継げる（Haiku は非対応）
     if (modelKey !== "haiku") {
       params.betas = ["server-side-fallback-2026-07-01"];
@@ -921,6 +999,7 @@ async function send(text) {
     });
 
     currentStream.on("text", (delta) => {
+      if (timing && !timing.firstText) timing.firstText = performance.now();
       shownText += delta;
       bubble.textContent = shownText;
       $("log").scrollTop = $("log").scrollHeight;
@@ -967,6 +1046,7 @@ async function send(text) {
 }
 
 function afterTurn() {
+  showTiming();
   setState("idle", "マイクを押して話しかけてください");
   if (settings.autoListen && Recognition) startListening();
 }
@@ -1010,6 +1090,7 @@ function syncSettingsForm() {
   $("pitch").value = settings.pitch;
   $("autoListen").checked = settings.autoListen;
   $("autoReset").value = String(settings.autoResetMin);
+  $("showTiming").checked = settings.showTiming;
   $("ttsEngine").value = settings.ttsEngine;
   $("fishVoice").value = FISH_VOICES.some(v => v.id === settings.fishVoice) || settings.fishVoice === "custom" ? settings.fishVoice : FISH_VOICES[0].id;
   $("fishVoiceCustom").value = settings.fishVoiceCustom;
@@ -1067,9 +1148,31 @@ $("settingsForm").addEventListener("submit", () => {
   Object.assign(settings, readVoiceForm());
   settings.autoListen = $("autoListen").checked;
   settings.autoResetMin = Number($("autoReset").value);
+  settings.showTiming = $("showTiming").checked;
   fishErrorShown = false;
   store.set("pallas.settings", settings);
 });
+
+// ===== PWA =====
+// Service Worker を登録（https か localhost のときだけ動く）
+if ("serviceWorker" in navigator && /^https?:$/.test(location.protocol)) {
+  navigator.serviceWorker.register("sw.js").catch((e) => console.warn("Service Worker を登録できませんでした:", e));
+}
+// Chrome / Edge / Android：インストールできるときだけ「アプリに追加」ボタンを出す
+let installPrompt = null;
+window.addEventListener("beforeinstallprompt", (e) => {
+  e.preventDefault();
+  installPrompt = e;
+  $("installBtn").hidden = false;
+});
+$("installBtn").addEventListener("click", async () => {
+  if (!installPrompt) return;
+  installPrompt.prompt();
+  await installPrompt.userChoice.catch(() => {});
+  installPrompt = null;
+  $("installBtn").hidden = true;
+});
+window.addEventListener("appinstalled", () => { $("installBtn").hidden = true; });
 
 // モデル切り替え（ヘッダー）
 for (const [key, m] of Object.entries(MODELS)) {
