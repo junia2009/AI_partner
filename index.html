@@ -761,11 +761,15 @@ function silentWavUrl() {
   w(36, "data"); v.setUint32(40, n * 2, true);
   return URL.createObjectURL(new Blob([buf], { type: "audio/wav" }));
 }
+// iPhone・iPad かどうか（iPadOS は Mac のふりをするので、タッチ対応かも見る）
+const IS_IOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+
 function unlockFishAudio() {
   try {
-    // 音量を測ってパラスの目や波紋を声に合わせるための仕組み
+    // 音量を測ってパラスの目や波紋を声に合わせるための仕組み（Web Audio）。
+    // iPhone・iPad では、これが動いているとマイクが使えず、マイクを使うとこちらの音が消えるため使わない
     const AC = window.AudioContext || window.webkitAudioContext;
-    if (AC && !audioCtx) {
+    if (AC && !audioCtx && !IS_IOS) {
       audioCtx = new AC();
       const src = audioCtx.createMediaElementSource(fishAudio);
       analyser = audioCtx.createAnalyser();
