@@ -298,7 +298,32 @@
       <div class="hint">キーはこのブラウザの中（localStorage）にだけ保存され、Anthropic のAPIへ直接送られます。共有のパソコンでは使わないでください。</div>
     </div>
     <div class="field">
-      <label for="voiceSelect">パラスの声</label>
+      <label for="ttsEngine">声のエンジン</label>
+      <select id="ttsEngine">
+        <option value="browser">ブラウザ標準の声</option>
+        <option value="fish">Fish Audio</option>
+      </select>
+    </div>
+    <div id="fishFields">
+      <div class="field">
+        <label for="fishVoice">パラスの声（Fish Audio）</label>
+        <select id="fishVoice"></select>
+        <input id="fishVoiceCustom" type="text" placeholder="Fish Audio の声のID（32文字）" autocomplete="off" style="margin-top:8px">
+        <div class="hint">Fish Audio の公開ボイスです。声のページ（fish.audio/m/声のID）で試聴できます。</div>
+      </div>
+      <div class="field">
+        <label for="fishRelayUrl">中継サーバーのURL</label>
+        <input id="fishRelayUrl" type="text" placeholder="https://pallas-fish-relay.xxxx.workers.dev" autocomplete="off">
+        <div class="hint">Fish Audio はブラウザから直接呼べないため、Cloudflare Workers の中継サーバーを使います。設置手順はリポジトリの relay/README.md にあります。</div>
+      </div>
+      <div class="field">
+        <label for="fishApiKey">Fish Audio の APIキー</label>
+        <input id="fishApiKey" type="password" placeholder="中継サーバー側に登録した場合は空欄" autocomplete="off">
+        <div class="hint">無料モデル（s2.1-pro-free）を使います。</div>
+      </div>
+    </div>
+    <div class="field" id="browserVoiceField">
+      <label for="voiceSelect">パラスの声（ブラウザ標準）</label>
       <select id="voiceSelect"></select>
     </div>
     <div class="field">
@@ -306,7 +331,7 @@
       <input id="rate" type="range" min="0.7" max="1.6" step="0.05">
     </div>
     <div class="field">
-      <label for="pitch">声の高さ <span id="pitchVal"></span></label>
+      <label for="pitch">声の高さ（ブラウザ標準の声のみ） <span id="pitchVal"></span></label>
       <input id="pitch" type="range" min="0.5" max="1.5" step="0.05">
     </div>
     <div class="field">
@@ -395,7 +420,8 @@ const store = {
   remove(key) { try { localStorage.removeItem(key); } catch {} },
 };
 const settings = Object.assign(
-  { apiKey: "", voiceURI: "", rate: 1.1, pitch: 1.0, autoListen: false, model: "haiku", autoResetMin: 60 },
+  { apiKey: "", voiceURI: "", rate: 1.1, pitch: 1.0, autoListen: false, model: "haiku", autoResetMin: 60,
+    ttsEngine: "browser", fishRelayUrl: "", fishApiKey: "", fishVoice: "45c5d3723c9c42f598e4776dcfd5f02d", fishVoiceCustom: "" },
   store.get("pallas.settings", {})
 );
 // API に送る会話履歴。アシスタントの応答は content ブロックをそのまま保存する（thinking ブロックも含めて変更しない）
@@ -488,6 +514,15 @@ function unlockSpeech() {
 }
 window.addEventListener("pointerdown", unlockSpeech, { capture: true });
 window.addEventListener("keydown", unlockSpeech, { capture: true });
+// Fish Audio の再生は関数定義後に登録（下の unlockFishAudio）
+let fishUnlocked = false;
+function unlockFishOnce() {
+  if (fishUnlocked) return;
+  fishUnlocked = true;
+  unlockFishAudio();
+}
+window.addEventListener("pointerdown", unlockFishOnce, { capture: true });
+window.addEventListener("keydown", unlockFishOnce, { capture: true });
 
 // Chrome は読み上げ中の発話オブジェクトがメモリから消されると、途中で止まったり終了通知が来なかったりする。
 // 読み終わるまで参照を持っておく
@@ -500,9 +535,11 @@ function pickVoice() {
     || voices[0];
 }
 
-function speak(text) {
+// ブラウザ標準の読み上げ。track=false のときは読み上げキューの数に含めない（Fish Audio 失敗時の代役用）
+function speakBrowser(text, track = true) {
+  return new Promise((resolve) => {
   const t = cleanForSpeech(text);
-  if (!synth || !t) return;
+  if (!synth || !t) return resolve();
   if (!voices.length) loadVoices();
   const u = new SpeechSynthesisUtterance(t);
   u.lang = "ja-JP";
@@ -510,12 +547,15 @@ function speak(text) {
   if (v) u.voice = v;
   u.rate = settings.rate;
   u.pitch = settings.pitch;
-  speakQueue++;
+  if (track) speakQueue++;
   u.onstart = () => setState("speaking", "話しています");
   const done = () => {
     liveUtterances.delete(u);
-    speakQueue = Math.max(0, speakQueue - 1);
-    maybeFinishSpeaking();
+    if (track) {
+      speakQueue = Math.max(0, speakQueue - 1);
+      maybeFinishSpeaking();
+    }
+    resolve();
   };
   // 単語の区切りごとに3Dモデルの目を光らせる
   u.onboundary = () => window.dispatchEvent(new Event("pallas:boundary"));
@@ -536,16 +576,204 @@ function speak(text) {
   liveUtterances.add(u);
   if (synth.paused) synth.resume();
   synth.speak(u);
+  });
+}
+
+// ===== Fish Audio の声 =====
+// Fish Audio の公開ボイスから選んだ「落ち着いた男性」の候補（設定で別のIDも入れられる）
+const FISH_VOICES = [
+  { id: "45c5d3723c9c42f598e4776dcfd5f02d", name: "落ち着いた男性（若め・会話向き）" },
+  { id: "a365c3050dd04026a81291145e017d6f", name: "つの（低め・落ち着き）" },
+  { id: "297a6fd278df47c3b9da9bfdf55ac89a", name: "さとる（穏やか・柔らかい）" },
+  { id: "d738c70d206149e69f8e3b6fc8af9d96", name: "じん（大人・ラジオ風）" },
+  { id: "6daf5fa1876149899323e17f07245d2f", name: "人生のたび（低音・ナレーション）" },
+];
+const FISH_MODEL = "s2.1-pro-free"; // 無料の開発者向けモデル
+const FISH_PREFETCH = 2;            // 先読みする文の数（無料枠の混雑を避けるため控えめ）
+
+const fishAudio = new Audio();
+fishAudio.preload = "auto";
+let audioCtx = null, analyser = null, levelBuf = null;
+let fishQueue = [];
+let fishPlaying = false;
+let stopCurrentAudio = null;
+let fishErrorShown = false;
+
+function fishReady() {
+  return settings.ttsEngine === "fish" && !!settings.fishRelayUrl;
+}
+function fishVoiceId() {
+  return (settings.fishVoice === "custom" ? settings.fishVoiceCustom : settings.fishVoice) || FISH_VOICES[0].id;
+}
+
+// 無音の短いWAV（スマホで最初のタップ時に音声再生を許可させるため）
+function silentWavUrl() {
+  const n = 800, buf = new ArrayBuffer(44 + n * 2), v = new DataView(buf);
+  const w = (o, str) => [...str].forEach((c, i) => v.setUint8(o + i, c.charCodeAt(0)));
+  w(0, "RIFF"); v.setUint32(4, 36 + n * 2, true); w(8, "WAVE"); w(12, "fmt ");
+  v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
+  v.setUint32(24, 8000, true); v.setUint32(28, 16000, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true);
+  w(36, "data"); v.setUint32(40, n * 2, true);
+  return URL.createObjectURL(new Blob([buf], { type: "audio/wav" }));
+}
+function unlockFishAudio() {
+  try {
+    // 音量を測ってパラスの目や波紋を声に合わせるための仕組み
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (AC && !audioCtx) {
+      audioCtx = new AC();
+      const src = audioCtx.createMediaElementSource(fishAudio);
+      analyser = audioCtx.createAnalyser();
+      analyser.fftSize = 512;
+      levelBuf = new Uint8Array(analyser.fftSize);
+      src.connect(analyser);
+      analyser.connect(audioCtx.destination);
+    }
+    audioCtx?.resume();
+    if (!fishPlaying) {
+      fishAudio.src = silentWavUrl();
+      fishAudio.play().catch(() => {});
+    }
+  } catch {}
+}
+
+async function fetchFish(text, signal) {
+  const headers = { "Content-Type": "application/json", "model": FISH_MODEL };
+  if (settings.fishApiKey) headers.Authorization = `Bearer ${settings.fishApiKey}`;
+  const res = await fetch(settings.fishRelayUrl.replace(/\/+$/, "") + "/v1/tts", {
+    method: "POST",
+    signal,
+    headers,
+    body: JSON.stringify({
+      text,
+      reference_id: fishVoiceId(),
+      format: "mp3",
+      latency: "balanced",
+      normalize: true,
+      prosody: { speed: Math.min(2, Math.max(0.5, settings.rate)) },
+    }),
+  });
+  if (!res.ok) {
+    let msg = "";
+    try { msg = (await res.json()).message || ""; } catch {}
+    const err = new Error(msg || `HTTP ${res.status}`);
+    err.status = res.status;
+    throw err;
+  }
+  return await res.blob();
+}
+
+function reportFishError(err) {
+  if (fishErrorShown) return;
+  fishErrorShown = true;
+  const s = err.status;
+  const hint =
+    s === 401 ? "Fish Audio の APIキーが無効です。設定を確認してください。" :
+    s === 402 ? "Fish Audio のクレジットが足りません。" :
+    s === 403 ? "中継サーバーがこのページからの呼び出しを断りました（ALLOWED_ORIGINS を確認してください）。" :
+    s === 429 ? "Fish Audio が混み合っているか、無料枠の上限に達しました。" :
+    s ? `Fish Audio でエラーが起きました（${s}: ${err.message}）。` :
+    "中継サーバーに接続できませんでした。設定の中継サーバーのURLを確認してください。";
+  addMsg("error", `${hint} しばらくはブラウザの声で読み上げます。`);
+}
+
+// 先読み：キューの先頭から数件だけ音声を作り始める
+function pumpFishFetches() {
+  for (const item of fishQueue.slice(0, FISH_PREFETCH)) {
+    if (!item.promise) {
+      item.promise = fetchFish(item.text, item.ctrl.signal);
+      item.promise.catch(() => {});
+    }
+  }
+}
+
+function speakFish(text) {
+  const t = cleanForSpeech(text);
+  if (!t) return;
+  speakQueue++;
+  fishQueue.push({ text: t, ctrl: new AbortController(), promise: null });
+  pumpFishFetches();
+  if (!fishPlaying) playNextFish();
+}
+
+function playBlob(blob) {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(blob);
+    const cleanup = () => {
+      URL.revokeObjectURL(url);
+      fishAudio.onended = fishAudio.onerror = null;
+      stopCurrentAudio = null;
+    };
+    fishAudio.onended = () => { cleanup(); resolve(); };
+    fishAudio.onerror = () => { cleanup(); reject(new Error("音声を再生できませんでした")); };
+    stopCurrentAudio = () => { fishAudio.pause(); cleanup(); resolve(); };
+    fishAudio.src = url;
+    audioCtx?.resume();
+    setState("speaking", "話しています");
+    fishAudio.play().catch((e) => { cleanup(); reject(e); });
+  });
+}
+
+async function playNextFish() {
+  const item = fishQueue.shift();
+  if (!item) { fishPlaying = false; return; }
+  fishPlaying = true;
+  if (!item.promise) { item.promise = fetchFish(item.text, item.ctrl.signal); item.promise.catch(() => {}); }
+  pumpFishFetches();
+  try {
+    const blob = await item.promise;
+    if (!item.ctrl.signal.aborted) await playBlob(blob);
+  } catch (err) {
+    if (!item.ctrl.signal.aborted && err.name !== "AbortError") {
+      reportFishError(err);
+      await speakBrowser(item.text, false);
+    }
+  }
+  if (!item.ctrl.signal.aborted) {
+    speakQueue = Math.max(0, speakQueue - 1);
+    maybeFinishSpeaking();
+  }
+  playNextFish();
+}
+
+function stopFish() {
+  for (const item of fishQueue) item.ctrl.abort();
+  fishQueue = [];
+  stopCurrentAudio?.();
+}
+
+// 再生中の音量をパラスの3Dモデルへ伝える
+(function watchLevel() {
+  if (analyser && !fishAudio.paused) {
+    analyser.getByteTimeDomainData(levelBuf);
+    let sum = 0;
+    for (const x of levelBuf) { const d = (x - 128) / 128; sum += d * d; }
+    const level = Math.min(1, Math.sqrt(sum / levelBuf.length) * 4);
+    window.dispatchEvent(new CustomEvent("pallas:level", { detail: level }));
+    if (level > 0.35) window.dispatchEvent(new Event("pallas:boundary"));
+  }
+  requestAnimationFrame(watchLevel);
+})();
+
+// 読み上げの入口：Fish Audio が設定済みならそちら、なければブラウザの声
+function speak(text) {
+  if (fishReady() && !fishErrorShown) speakFish(text);
+  else speakBrowser(text);
 }
 function maybeFinishSpeaking() {
-  if (speakQueue === 0 && !busy && onSpeakDone) {
+  if (speakQueue !== 0 || busy) return;
+  if (onSpeakDone) {
     const cb = onSpeakDone; onSpeakDone = null; cb();
+  } else if (document.body.dataset.state === "speaking") {
+    // 「声を試す」など、会話以外の読み上げが終わったとき
+    setState("idle", "マイクを押して話しかけてください");
   }
 }
 function stopSpeaking() {
   speakQueue = 0;
   onSpeakDone = null;
   synth?.cancel();
+  stopFish();
 }
 
 // ストリーミング中のテキストを文の区切りごとに読み上げキューへ流す
@@ -782,6 +1010,12 @@ function syncSettingsForm() {
   $("pitch").value = settings.pitch;
   $("autoListen").checked = settings.autoListen;
   $("autoReset").value = String(settings.autoResetMin);
+  $("ttsEngine").value = settings.ttsEngine;
+  $("fishVoice").value = FISH_VOICES.some(v => v.id === settings.fishVoice) || settings.fishVoice === "custom" ? settings.fishVoice : FISH_VOICES[0].id;
+  $("fishVoiceCustom").value = settings.fishVoiceCustom;
+  $("fishRelayUrl").value = settings.fishRelayUrl;
+  $("fishApiKey").value = settings.fishApiKey;
+  updateVoiceFields();
   $("rateVal").textContent = `×${Number(settings.rate).toFixed(2)}`;
   $("pitchVal").textContent = Number(settings.pitch).toFixed(2);
   loadVoices();
@@ -789,22 +1023,51 @@ function syncSettingsForm() {
 $("settingsBtn").addEventListener("click", () => { syncSettingsForm(); $("settings").showModal(); });
 $("rate").addEventListener("input", (e) => $("rateVal").textContent = `×${Number(e.target.value).toFixed(2)}`);
 $("pitch").addEventListener("input", (e) => $("pitchVal").textContent = Number(e.target.value).toFixed(2));
+function readVoiceForm() {
+  return {
+    voiceURI: $("voiceSelect").value,
+    rate: Number($("rate").value),
+    pitch: Number($("pitch").value),
+    ttsEngine: $("ttsEngine").value,
+    fishVoice: $("fishVoice").value,
+    fishVoiceCustom: $("fishVoiceCustom").value.trim(),
+    fishRelayUrl: $("fishRelayUrl").value.trim(),
+    fishApiKey: $("fishApiKey").value.trim(),
+  };
+}
+function updateVoiceFields() {
+  const fish = $("ttsEngine").value === "fish";
+  $("fishFields").style.display = fish ? "" : "none";
+  $("browserVoiceField").style.display = fish ? "none" : "";
+  $("fishVoiceCustom").style.display = $("fishVoice").value === "custom" ? "" : "none";
+}
+$("ttsEngine").addEventListener("change", updateVoiceFields);
+$("fishVoice").addEventListener("change", updateVoiceFields);
+for (const v of FISH_VOICES) {
+  const o = document.createElement("option");
+  o.value = v.id; o.textContent = v.name;
+  $("fishVoice").appendChild(o);
+}
+$("fishVoice").insertAdjacentHTML("beforeend", `<option value="custom">IDを直接入力…</option>`);
+
 $("testVoiceBtn").addEventListener("click", () => {
   const prev = { ...settings };
-  settings.voiceURI = $("voiceSelect").value;
-  settings.rate = Number($("rate").value);
-  settings.pitch = Number($("pitch").value);
+  Object.assign(settings, readVoiceForm());
+  fishErrorShown = false;
   stopSpeaking();
+  if (settings.ttsEngine === "fish" && !settings.fishRelayUrl) {
+    addMsg("error", "Fish Audio を使うには中継サーバーのURLが必要です。");
+  }
+  // speak() はその場で設定値を読むので、呼んだ直後に元へ戻してよい
   speak("パラスです。準備はできています。");
-  Object.assign(settings, { voiceURI: prev.voiceURI, rate: prev.rate, pitch: prev.pitch });
+  Object.assign(settings, prev);
 });
 $("settingsForm").addEventListener("submit", () => {
   settings.apiKey = $("apiKey").value.trim();
-  settings.voiceURI = $("voiceSelect").value;
-  settings.rate = Number($("rate").value);
-  settings.pitch = Number($("pitch").value);
+  Object.assign(settings, readVoiceForm());
   settings.autoListen = $("autoListen").checked;
   settings.autoResetMin = Number($("autoReset").value);
+  fishErrorShown = false;
   store.set("pallas.settings", settings);
 });
 
@@ -827,7 +1090,7 @@ $("modelSelect").addEventListener("change", (e) => {
 // 数秒たっても日本語の声が見つからなければ知らせる（端末に日本語音声が入っていないと無音になる）
 setTimeout(() => {
   if (!synth) addMsg("error", "このブラウザは読み上げに対応していません。");
-  else if (!voicesReady) addMsg("error", "この端末に日本語の読み上げ音声が見つかりません。端末の設定で日本語の音声を追加してください。");
+  else if (!voicesReady && !fishReady()) addMsg("error", "この端末に日本語の読み上げ音声が見つかりません。端末の設定で日本語の音声を追加してください。");
 }, 3000);
 renderHistory();
 // レイアウト確定後（3D表示の読み込みで高さが変わる）にも最新の発言まで送る
@@ -1033,6 +1296,7 @@ try {
   let nextBlink = 3, blinkT = -1;
   let speechLevel = 0;
   window.addEventListener("pallas:boundary", () => { speechLevel = 1; });
+  window.addEventListener("pallas:level", (e) => { speechLevel = Math.max(speechLevel, e.detail); });
 
   // --- サイズ調整 ---
   function resize() {
