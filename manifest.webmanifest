@@ -1,7 +1,7 @@
 {
   "name": "AIパラス",
   "short_name": "パラス",
-  "description": "りょうさん専属の音声AIアシスタント",
+  "description": "マスター専属の音声AIアシスタント",
   "lang": "ja",
   "id": "./",
   "start_url": "./",
