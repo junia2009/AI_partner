@@ -936,24 +936,88 @@ let recognition = null;
 let listening = false;
 let interimEl = null;
 
+// 音声認識の状態。listening は「マイクが実際に聞いている」、recogActive は「開始してから終わるまで」
+let recogActive = false;
+let listenAfterTurn = false;
+let silentStarts = 0; // 開始したのに何も返ってこなかった回数（音声認識が動かないブラウザの検出用） // 返事の処理中にマイクが押されたら、処理を止めたあとで聞き取りを始める
+
 function startListening() {
   if (!Recognition) {
     addMsg("error", "このブラウザは音声認識に対応していません。Chrome か Safari を使うか、文字で入力してください。");
     return;
   }
-  if (listening || busy) return;
+  if (recogActive) return;
+  if (busy) {
+    // 返事の処理中：止めてから聞き取りを始める（処理の後片付けが終わったら send() の最後で開始）
+    listenAfterTurn = true;
+    currentStream?.abort();
+    stopSpeaking();
+    setState("listening", "マイクを準備しています…");
+    return;
+  }
   stopSpeaking();
-  recognition = new Recognition();
-  recognition.lang = "ja-JP";
-  recognition.interimResults = true;
-  recognition.continuous = false;
+
+  const rec = new Recognition();
+  recognition = rec;
+  rec.lang = "ja-JP";
+  rec.interimResults = true;
+  rec.continuous = false;
+  recogActive = true;
   let finalText = "";
   let latestInterim = "";
-  let silenceTimer = null;
+  let gotStart = false;
+  let finished = false;
+  let errorCode = "";
+  let cancelled = false;
+  let silenceTimer = null, startWatch = null, endWatch = null, maxTimer = null, noResultTimer = null;
+  let gotResult = false;
   lastSpeechAt = 0;
+  setState("listening", "マイクを準備しています…");
 
-  recognition.onstart = () => { listening = true; setState("listening", "聞いています…"); };
-  recognition.onresult = (e) => {
+  // 聞き取りの終わり。ブラウザから終了の合図（onend）が来なくても、必ずここを1回だけ通す
+  const finish = () => {
+    if (finished) return;
+    finished = true;
+    [silenceTimer, startWatch, endWatch, maxTimer, noResultTimer].forEach(clearTimeout);
+    recogActive = false;
+    listening = false;
+    if (recognition === rec) recognition = null;
+    interimEl?.remove();
+    interimEl = null;
+    recogEndAt = performance.now();
+    // 途中で止めた場合、最後の部分が「確定前」のまま残ることがあるので、それも使う
+    const text = (finalText + latestInterim).trim();
+    if (text) { send(text); return; }
+    setState("idle", "マイクを押して話しかけてください");
+    if (!cancelled && (errorCode === "no-speech" || (gotStart && !errorCode))) {
+      addMsg("system", "声が聞き取れませんでした。もう一度マイクを押して話しかけてください。");
+      // 開始はしたのに一度も結果が来ない：その端末・ブラウザの音声認識が動いていない可能性が高い
+      if (gotStart && !gotResult && !errorCode && ++silentStarts >= 2) {
+        addMsg("error", "このブラウザでは音声認識が動いていないようです。iPhone・iPad では Safari で開くと動く場合があります。それまでは文字入力を使ってください。");
+        silentStarts = 0;
+      }
+    }
+  };
+  // 止める。終了の合図が来ない端末があるので、少し待っても来なければ強制的に終える
+  const requestStop = () => {
+    clearTimeout(silenceTimer);
+    try { rec.stop(); } catch {}
+    clearTimeout(endWatch);
+    endWatch = setTimeout(() => { try { rec.abort(); } catch {} finish(); }, 1500);
+  };
+  rec.requestStop = (userCancel) => { if (userCancel) cancelled = true; requestStop(); };
+
+  rec.onstart = () => {
+    gotStart = true;
+    listening = true;
+    clearTimeout(startWatch);
+    setState("listening", "聞いています…");
+    // 話し続けても20秒で区切る（終わらないままになるのを防ぐ）
+    maxTimer = setTimeout(requestStop, 20000);
+    // 8秒たっても何も聞き取れなければ区切る（結果を返さないブラウザで待たされ続けないように）
+    noResultTimer = setTimeout(() => { if (!gotResult) requestStop(); }, 8000);
+  };
+  rec.onresult = (e) => {
     let interim = "";
     for (let i = e.resultIndex; i < e.results.length; i++) {
       const r = e.results[i];
@@ -961,37 +1025,49 @@ function startListening() {
       else interim += r[0].transcript;
     }
     latestInterim = interim;
+    if (!gotResult) { gotResult = true; silentStarts = 0; clearTimeout(noResultTimer); }
     // ブラウザの判断を待たず、一定時間あたらしい言葉が来なければ話し終わったとみなす
     lastSpeechAt = performance.now();
     clearTimeout(silenceTimer);
-    silenceTimer = setTimeout(() => { if (listening) recognition.stop(); }, SILENCE_MS);
+    silenceTimer = setTimeout(requestStop, SILENCE_MS);
     const shown = finalText + interim;
     if (!interimEl) interimEl = addMsg("user interim", shown);
     else interimEl.textContent = shown;
     $("log").scrollTop = $("log").scrollHeight;
   };
-  recognition.onerror = (e) => {
-    if (e.error === "not-allowed" || e.error === "service-not-allowed") {
-      addMsg("error", "マイクの使用が許可されていません。ブラウザの設定でマイクを許可してください。");
-    } else if (e.error !== "no-speech" && e.error !== "aborted") {
-      addMsg("error", `音声認識エラー: ${e.error}`);
-    }
+  rec.onerror = (e) => {
+    errorCode = e.error || "unknown";
+    const msg = {
+      "not-allowed": "マイクの使用が許可されていません。ブラウザの設定でマイクを許可してください。",
+      "service-not-allowed": "この環境では音声認識が許可されていません。ブラウザの設定を確認してください。",
+      "audio-capture": "マイクが使えませんでした。ほかのアプリがマイクを使っていないか確認してください。",
+      "network": "音声認識のサーバーにつながりませんでした（ブラウザの音声認識はネット接続が必要です）。",
+      "language-not-supported": "この端末では日本語の音声認識が使えないようです。",
+    }[errorCode];
+    if (msg) addMsg("error", msg);
+    else if (!["no-speech", "aborted"].includes(errorCode)) addMsg("error", `音声認識エラー: ${errorCode}`);
   };
-  recognition.onend = () => {
-    listening = false;
-    clearTimeout(silenceTimer);
-    interimEl?.remove();
-    interimEl = null;
-    recogEndAt = performance.now();
-    // 途中で止めた場合、最後の部分が「確定前」のまま残ることがあるので、それも使う
-    const text = (finalText + latestInterim).trim();
-    if (text) send(text);
-    else setState("idle", "マイクを押して話しかけてください");
-  };
-  try { recognition.start(); } catch { /* 二重起動は無視 */ }
+  rec.onend = finish;
+
+  // 開始の合図が来ないまま固まるのを防ぐ
+  startWatch = setTimeout(() => {
+    if (gotStart || finished) return;
+    try { rec.abort(); } catch {}
+    addMsg("error", "マイクを開始できませんでした。もう一度押してみてください。");
+    cancelled = true;
+    finish();
+  }, 4000);
+
+  try {
+    rec.start();
+  } catch (err) {
+    addMsg("error", `マイクを開始できませんでした（${err?.message ?? err}）。`);
+    cancelled = true;
+    finish();
+  }
 }
 function stopListening() {
-  if (recognition && listening) recognition.stop();
+  if (recognition && recogActive) recognition.requestStop(true);
 }
 
 // ===== 反応時間の計測 =====
@@ -1166,7 +1242,12 @@ async function send(text) {
   } finally {
     currentStream = null;
     busy = false;
-    if (speakQueue > 0) {
+    if (listenAfterTurn) {
+      // 返事の途中でマイクが押された：そのまま聞き取りへ
+      listenAfterTurn = false;
+      showTiming();
+      startListening();
+    } else if (speakQueue > 0) {
       onSpeakDone = afterTurn;
     } else {
       afterTurn();
@@ -1191,7 +1272,7 @@ function stopAll() {
 $("micBtn").addEventListener("click", () => {
   // iOS Safari は最初のユーザー操作の中で読み上げを有効化しておく必要がある
   if (synth && !synth.speaking) synth.resume();
-  if (listening) stopListening();
+  if (recogActive) stopListening();
   else if (busy || document.body.dataset.state === "speaking") { stopAll(); startListening(); }
   else startListening();
 });
@@ -1202,7 +1283,7 @@ $("composer").addEventListener("submit", (e) => {
   $("textInput").value = "";
   send(t);
 });
-$("stopBtn").addEventListener("click", stopAll);
+$("stopBtn").addEventListener("click", () => { listenAfterTurn = false; stopAll(); });
 $("drone").addEventListener("click", () => $("micBtn").click());
 $("newChatBtn").addEventListener("click", () => {
   if (!confirm("会話をリセットしますか？")) return;
@@ -1523,6 +1604,147 @@ try {
   root.traverse((o) => { if (o.isMesh) mats[o.material.name] = o.material; });
   const glowMat = mats["cyan_glow"];
   const eyeMat = mats["eye"];
+
+  // ===== 歴戦の汚し（くすみ・汚れ・傷・塗装の剥がれ）=====
+  // 画像ファイルを増やさず、起動時にキャンバスで模様を描いて素材に貼る。
+  // 乱数は種を固定しているので、毎回同じ傷になる
+  function rng(seed) {
+    return () => {
+      seed |= 0; seed = (seed + 0x6d2b79f5) | 0;
+      let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+  function makeWear(o) {
+    const W = o.w || 1024, H = o.h || 512, R = rng(o.seed);
+    const mk = () => { const c = document.createElement("canvas"); c.width = W; c.height = H; return [c, c.getContext("2d")]; };
+    const [colC, col] = mk(), [rouC, rou] = mk(), [bumC, bum] = mk();
+    col.fillStyle = o.paint; col.fillRect(0, 0, W, H);
+    rou.fillStyle = `rgb(${o.rough},${o.rough},${o.rough})`; rou.fillRect(0, 0, W, H);
+    bum.fillStyle = "#808080"; bum.fillRect(0, 0, W, H);
+    // 横方向は一周つながっているので、端をまたぐ形は反対側にも描く
+    const wrap = (fn) => { fn(0); fn(W); fn(-W); };
+
+    // くすみ：大きく淡いムラ（下側ほど濃く）
+    for (let i = 0; i < o.grime; i++) {
+      const x = R() * W, y = Math.pow(R(), o.grimeBias ?? 1) * H, r = 20 + R() * 120, a = (0.03 + R() * 0.07) * (o.grimeStrength ?? 1);
+      wrap((dx) => {
+        for (const [ctx, c] of [[col, o.grimeColor], [rou, "255,255,255"]]) {
+          const g = ctx.createRadialGradient(x + dx, y, 0, x + dx, y, r);
+          g.addColorStop(0, `rgba(${c},${ctx === rou ? a * 1.6 : a})`);
+          g.addColorStop(1, `rgba(${c},0)`);
+          ctx.fillStyle = g; ctx.fillRect(x + dx - r, y - r, r * 2, r * 2);
+        }
+      });
+    }
+    // 雨だれのような縦すじ
+    for (let i = 0; i < (o.streaks || 0); i++) {
+      const x = R() * W, y = R() * H * 0.7, len = 30 + R() * 160, w = 1 + R() * 3;
+      const g = col.createLinearGradient(0, y, 0, y + len);
+      g.addColorStop(0, `rgba(${o.grimeColor},${0.08 + R() * 0.1})`);
+      g.addColorStop(1, `rgba(${o.grimeColor},0)`);
+      col.fillStyle = g; col.fillRect(x, y, w, len);
+    }
+    // 細かい傷：明るい擦れと暗い線
+    for (let i = 0; i < o.scratches; i++) {
+      const x = R() * W, y = R() * H, len = 6 + Math.pow(R(), 2) * 90, ang = R() * Math.PI;
+      const x2 = x + Math.cos(ang) * len, y2 = y + Math.sin(ang) * len * 0.5;
+      const light = R() < 0.6, lw = 0.5 + R() * 1.1, a = (0.15 + R() * 0.35) * (o.scratchAlpha ?? 1);
+      wrap((dx) => {
+        col.strokeStyle = light ? `rgba(255,255,255,${a})` : `rgba(40,45,55,${a * 0.8})`;
+        col.lineWidth = lw; col.beginPath(); col.moveTo(x + dx, y); col.lineTo(x2 + dx, y2); col.stroke();
+        rou.strokeStyle = `rgba(255,255,255,${a * 0.9})`; rou.lineWidth = lw + 0.5;
+        rou.beginPath(); rou.moveTo(x + dx, y); rou.lineTo(x2 + dx, y2); rou.stroke();
+        bum.strokeStyle = `rgba(0,0,0,${a})`; bum.lineWidth = lw;
+        bum.beginPath(); bum.moveTo(x + dx, y); bum.lineTo(x2 + dx, y2); bum.stroke();
+      });
+    }
+    // 塗装の剥がれ：小さな不規則な欠けから下地の金属がのぞく
+    for (let i = 0; i < (o.chips || 0); i++) {
+      const cx = R() * W, cy = R() * H, r = (1.5 + Math.pow(R(), 3) * 9) * (o.chipSize ?? 1), n = 6 + Math.floor(R() * 5);
+      const pts = Array.from({ length: n }, (_, k) => {
+        const t = (k / n) * Math.PI * 2, rr = r * (0.5 + R() * 0.7);
+        return [Math.cos(t) * rr, Math.sin(t) * rr];
+      });
+      const poly = (ctx, dx, grow) => {
+        ctx.beginPath();
+        pts.forEach(([px, py], k) => ctx[k ? "lineTo" : "moveTo"](cx + dx + px * grow, cy + py * grow));
+        ctx.closePath();
+      };
+      wrap((dx) => {
+        col.fillStyle = "rgba(235,238,242,0.5)"; poly(col, dx, 1.35); col.fill(); // 欠けのふち
+        col.fillStyle = o.metal; poly(col, dx, 1); col.fill();
+        rou.fillStyle = "rgb(90,90,90)"; poly(rou, dx, 1); rou.fill(); // 金属はつやがある
+        bum.fillStyle = "rgb(60,60,60)"; poly(bum, dx, 1); bum.fill(); // 一段へこむ
+      });
+    }
+    // 戦いの跡：長く深い切り傷（ギザギザの溝に下地の金属、ふちは塗装がめくれて明るい）
+    for (let i = 0; i < (o.scars || 0); i++) {
+      let x = (o.scarAt?.[i]?.[0] ?? R()) * W, y = (o.scarAt?.[i]?.[1] ?? R()) * H;
+      const ang = (o.scarAt?.[i]?.[2] ?? R() * Math.PI), segs = 10 + Math.floor(R() * 8), step = 6 + R() * 6;
+      const pts = [[x, y]];
+      for (let k = 0; k < segs; k++) {
+        const a = ang + (R() - 0.5) * 0.5;
+        x += Math.cos(a) * step; y += Math.sin(a) * step * 0.5;
+        pts.push([x, y]);
+      }
+      const path = (ctx, dx) => { ctx.beginPath(); pts.forEach(([px, py], k) => ctx[k ? "lineTo" : "moveTo"](px + dx, py)); };
+      wrap((dx) => {
+        col.lineCap = rou.lineCap = bum.lineCap = "round";
+        col.strokeStyle = "rgba(245,247,250,0.7)"; col.lineWidth = 6; path(col, dx); col.stroke();
+        col.strokeStyle = o.metal; col.lineWidth = 3.2; path(col, dx); col.stroke();
+        col.strokeStyle = "rgba(25,28,34,0.55)"; col.lineWidth = 1.2; path(col, dx); col.stroke();
+        rou.strokeStyle = "rgb(80,80,80)"; rou.lineWidth = 3.2; path(rou, dx); rou.stroke();
+        bum.strokeStyle = "rgb(20,20,20)"; bum.lineWidth = 3.2; path(bum, dx); bum.stroke();
+      });
+    }
+    // ごく細かいざらつき
+    for (const ctx of [col, rou]) {
+      const img = ctx.getImageData(0, 0, W, H), d = img.data, amt = ctx === col ? 5 : 14;
+      for (let i = 0; i < d.length; i += 4) {
+        const v = (R() - 0.5) * amt;
+        d[i] += v; d[i + 1] += v; d[i + 2] += v;
+      }
+      ctx.putImageData(img, 0, 0);
+    }
+    const tex = (c, srgb) => {
+      const t = new THREE.CanvasTexture(c);
+      t.flipY = false; // glTF の UV の向きに合わせる
+      t.wrapS = THREE.RepeatWrapping;
+      t.anisotropy = Math.min(8, renderer.capabilities.getMaxAnisotropy());
+      if (srgb) t.colorSpace = THREE.SRGBColorSpace;
+      return t;
+    };
+    return { map: tex(colC, true), roughnessMap: tex(rouC, false), bumpMap: tex(bumC, false) };
+  }
+  function applyWear(mat, wear, opt) {
+    if (!mat) return;
+    Object.assign(mat, wear, { roughness: 1, bumpScale: opt.bump ?? 1 });
+    if (opt.color) mat.color.setRGB(...opt.color);
+    mat.needsUpdate = true;
+  }
+  // 白い外装：わずかに黄ばんだ白に、汚れ・傷・剥がれ
+  applyWear(mats["shell"], makeWear({
+    seed: 7, paint: "#f1f3f5", rough: 115, grime: 170, grimeStrength: 1.7, grimeBias: 0.6, grimeColor: "60,62,66",
+    streaks: 55, scratches: 420, scratchAlpha: 0.85, chips: 60, chipSize: 0.8, metal: "#737981", scars: 3,
+  }), { color: [0.78, 0.82, 0.88], bump: 0.9 });
+  // 下半分の暗い外装：擦れと細かい傷
+  applyWear(mats["shell_dark"], makeWear({
+    seed: 11, paint: "#e6e6e6", rough: 135, grime: 70, grimeStrength: 1.4, grimeColor: "20,20,20",
+    scratches: 320, scratchAlpha: 0.8, chips: 35, chipSize: 0.8, metal: "#9aa0a8",
+  }), { bump: 0.7 });
+  // バイザーの枠：金属のふちの擦れ
+  applyWear(mats["visor_frame"], makeWear({
+    seed: 23, w: 512, h: 256, paint: "#e2e5ea", rough: 95, grime: 35, grimeColor: "30,30,35",
+    scratches: 220, scratchAlpha: 0.8, chips: 18, chipSize: 0.8, metal: "#c8ccd2",
+  }), { bump: 0.6 });
+  // ガラス：指紋や曇りのようなムラ
+  if (mats["lens"]) {
+    const w = makeWear({ seed: 31, w: 256, h: 256, paint: "#ffffff", rough: 25, grime: 30, grimeColor: "255,255,255", scratches: 60 });
+    mats["lens"].roughnessMap = w.roughnessMap; mats["lens"].roughness = 1; mats["lens"].needsUpdate = true;
+  }
+
   const base = {
     glowColor: glowMat?.emissive.clone(),
     glowIntensity: 0.55,
