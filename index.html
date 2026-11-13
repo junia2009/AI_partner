@@ -117,6 +117,13 @@
   .model-select { appearance: none; -webkit-appearance: none; padding-right: 10px; color: var(--accent); letter-spacing: .06em; }
   .model-select option { background: var(--panel); color: var(--text); }
 
+  /* 今いる場所の表示 */
+  .place { font-size: 11px; letter-spacing: .22em; color: rgba(230,236,248,.7); text-shadow: 0 1px 6px rgba(0,0,0,.6); margin-bottom: -4px; }
+  .place span { opacity: .6; }
+  .place b { font-weight: 500; color: var(--accent); }
+  /* 方眼は電脳空間のときだけ */
+  body:not([data-scene="cyber"])::before { display: none; }
+
   /* 3Dモデル（パラス本体） */
   .stage { display: flex; flex-direction: column; align-items: center; padding: 0 16px 4px; }
   .drone {
@@ -286,6 +293,7 @@
 
 <div class="content">
 <section class="stage">
+  <div class="place" aria-live="polite"><span>現在地</span> <b id="place"></b></div>
   <div class="drone" id="drone" title="タップして話しかける">
     <div class="hud r3"></div><div class="hud r1"></div><div class="hud r2"></div>
     <canvas id="pallasCanvas"></canvas>
@@ -1448,35 +1456,420 @@ if (!Recognition) {
 }
 </script>
 
-<!-- ===== 背景（粒子ネットワーク） ===== -->
+<!-- ===== 背景（パラスがいる場所） ===== -->
 <script>
 (() => {
+  // パラスは同じ場所にずっといるわけではない。時間帯に合った場所にいて、ときどき気まぐれに移動する。
+  // 場所は、電脳空間・夜の街の上空・星空・雲の上（朝焼け／青空／夕焼け）・雨の夜。
+  // どれも画像ファイルを使わず、起動時と場所の切り替え時にキャンバスへ描いて作る。
   const canvas = document.getElementById("bg");
   const ctx = canvas.getContext("2d");
   const reduceMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
-  const COLORS = {
+  const STATE_COLORS = {
     idle: [124, 196, 255], listening: [124, 220, 255], thinking: [180, 140, 255], speaking: [124, 196, 255],
   };
-  let w = 0, h = 0, dpr = 1, nodes = [], pulses = [];
-  let col = [...COLORS.idle];
-  let lastPulse = 0;
+  let w = 0, h = 0, dpr = 1;
+  let col = [...STATE_COLORS.idle];
+  let pulses = [], lastPulse = 0;
+
+  // ---------- 小道具 ----------
+  function rng(seed) {
+    return () => {
+      seed |= 0; seed = (seed + 0x6d2b79f5) | 0;
+      let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+  function offscreen(W, H) {
+    const c = document.createElement("canvas");
+    c.width = Math.max(1, Math.round(W)); c.height = Math.max(1, Math.round(H));
+    return [c, c.getContext("2d")];
+  }
+  function vgrad(c, stops, y0 = 0, y1 = h) {
+    const g = c.createLinearGradient(0, y0, 0, y1);
+    stops.forEach(([p, color]) => g.addColorStop(p, color));
+    return g;
+  }
+  function glow(c, x, y, r, color, a) {
+    const g = c.createRadialGradient(x, y, 0, x, y, r);
+    g.addColorStop(0, `rgba(${color},${a})`);
+    g.addColorStop(1, `rgba(${color},0)`);
+    c.fillStyle = g;
+    c.fillRect(x - r, y - r, r * 2, r * 2);
+  }
+
+  // ---------- 場所ごとの描き方 ----------
+  // それぞれ { label, light, draw(ctx, t, dt, env) } を返す。light は3Dのパラスの照明と霧の色
+  const SCENES = {
+    // 電脳空間：漂う粒子と、それをつなぐ線
+    cyber() {
+      const nodes = Array.from({ length: Math.min(140, Math.max(45, Math.round((w * h) / 8000))) }, () => ({
+        x: Math.random() * w, y: Math.random() * h,
+        vx: (Math.random() - 0.5) * 0.25, vy: (Math.random() - 0.5) * 0.25,
+        r: Math.random() * 1.6 + 0.8, phase: Math.random() * Math.PI * 2,
+      }));
+      const [bgC, b] = offscreen(w, h);
+      b.fillStyle = "#0b0f17"; b.fillRect(0, 0, w, h);
+      glow(b, w / 2, h * 0.22, Math.max(w, h) * 0.6, "40,90,170", 0.28);
+      glow(b, w / 2, h * 1.2, Math.max(w, h) * 0.8, "90,60,200", 0.16);
+      return {
+        label: "電脳空間", grid: true,
+        light: { fog: 0x0b1220, key: 0xffffff, keyI: 1.3, rim: 0x7cc4ff, sky: 0xbfd9ff, ground: 0x0b0f17 },
+        draw(c, t, dt, env) {
+          c.drawImage(bgC, 0, 0, w, h);
+          const [r, g, bl] = env.col;
+          const linkDist = Math.min(150, Math.max(90, w / 9));
+          for (const n of nodes) {
+            n.x += n.vx * env.speed * dt; n.y += n.vy * env.speed * dt;
+            if (n.x < -20) n.x = w + 20; else if (n.x > w + 20) n.x = -20;
+            if (n.y < -20) n.y = h + 20; else if (n.y > h + 20) n.y = -20;
+          }
+          c.lineWidth = 1;
+          for (let i = 0; i < nodes.length; i++) {
+            const a = nodes[i];
+            for (let j = i + 1; j < nodes.length; j++) {
+              const o = nodes[j], dx = a.x - o.x, dy = a.y - o.y, d2 = dx * dx + dy * dy;
+              if (d2 < linkDist * linkDist) {
+                c.strokeStyle = `rgba(${r},${g},${bl},${(1 - Math.sqrt(d2) / linkDist) * 0.32})`;
+                c.beginPath(); c.moveTo(a.x, a.y); c.lineTo(o.x, o.y); c.stroke();
+              }
+            }
+          }
+          for (const n of nodes) {
+            c.fillStyle = `rgba(${r},${g},${bl},${0.55 + 0.4 * Math.sin(t * (env.state === "thinking" ? 5 : 1.5) + n.phase)})`;
+            c.beginPath(); c.arc(n.x, n.y, n.r, 0, Math.PI * 2); c.fill();
+          }
+        },
+      };
+    },
+
+    // 夜の街の上空：遠くのビル群の灯り、ネオン、ときどき飛行機
+    city() {
+      const R = rng(101);
+      const [bgC, b] = offscreen(w, h);
+      b.fillStyle = vgrad(b, [[0, "#04060e"], [0.45, "#0b1028"], [0.75, "#24143a"], [1, "#3a1838"]]);
+      b.fillRect(0, 0, w, h);
+      for (let i = 0; i < 120; i++) { b.fillStyle = `rgba(255,255,255,${0.1 + R() * 0.3})`; b.fillRect(R() * w, R() * h * 0.45, 1, 1); }
+      glow(b, w * 0.5, h * 0.95, Math.max(w, h) * 0.75, "255,110,170", 0.22);
+      glow(b, w * 0.15, h * 0.9, w * 0.5, "90,180,255", 0.12);
+      const windows = [], neons = [];
+      const layers = [
+        { color: "#1b1f3e", hMin: 0.22, hMax: 0.48, wMin: 18, wMax: 46, win: 2, lit: 0.22, haze: 0.35 },
+        { color: "#11142b", hMin: 0.16, hMax: 0.38, wMin: 26, wMax: 70, win: 3, lit: 0.25, haze: 0.15 },
+        { color: "#07081a", hMin: 0.08, hMax: 0.26, wMin: 40, wMax: 110, win: 4, lit: 0.3, haze: 0 },
+      ];
+      layers.forEach((L, li) => {
+        let x = -R() * 40;
+        while (x < w) {
+          const bw = L.wMin + R() * (L.wMax - L.wMin), bh = h * (L.hMin + R() * (L.hMax - L.hMin)), top = h - bh;
+          b.fillStyle = L.color; b.fillRect(x, top, bw, bh);
+          if (R() < 0.3) { b.fillRect(x + bw * 0.4, top - bh * 0.08, Math.max(2, bw * 0.08), bh * 0.08); } // アンテナ
+          const step = L.win * 3;
+          for (let wy = top + step; wy < h - step; wy += step) {
+            for (let wx = x + L.win * 1.5; wx < x + bw - L.win * 2; wx += step) {
+              if (R() < L.lit) {
+                const warm = R() < 0.7, a = 0.35 + R() * 0.5;
+                const color = warm ? `rgba(255,214,140,${a})` : `rgba(160,215,255,${a})`;
+                b.fillStyle = color; b.fillRect(wx, wy, L.win, L.win * 1.3);
+                if (R() < 0.04) windows.push({ x: wx, y: wy, s: L.win, color, on: true, next: R() * 20 });
+              }
+            }
+          }
+          if (li > 0 && R() < 0.12) neons.push({ x: x + bw * 0.2, y: top + bh * (0.1 + R() * 0.3), w: bw * 0.6, h: 3 + R() * 4, color: R() < 0.5 ? "255,90,190" : "80,230,255", ph: R() * 10 });
+          if (L.haze) { b.fillStyle = `rgba(60,40,90,${L.haze})`; b.fillRect(x, top, bw, bh); }
+          x += bw + R() * 6;
+        }
+      });
+      let plane = null, nextPlane = 8;
+      return {
+        label: "夜の街の上空",
+        light: { fog: 0x1c1430, key: 0xd8d4ff, keyI: 1.1, rim: 0xff7ac8, sky: 0x9aa8ff, ground: 0x2a1640 },
+        draw(c, t, dt) {
+          c.drawImage(bgC, 0, 0, w, h);
+          for (const n of neons) {
+            const flick = n.ph > 7 && Math.sin(t * 13 + n.ph) > 0.92 ? 0.2 : 1; // たまにちらつく
+            c.fillStyle = `rgba(${n.color},${0.75 * flick})`; c.fillRect(n.x, n.y, n.w, n.h);
+            glow(c, n.x + n.w / 2, n.y + n.h / 2, n.w * 0.9, n.color, 0.18 * flick);
+          }
+          for (const win of windows) {
+            if (t > win.next) { win.on = !win.on; win.next = t + 3 + Math.random() * 25; }
+            if (!win.on) { c.fillStyle = "#0a0c1e"; c.fillRect(win.x, win.y, win.s, win.s * 1.3); }
+          }
+          if (!plane && t > nextPlane && !reduceMotion) {
+            const dir = Math.random() < 0.5 ? 1 : -1;
+            plane = { x: dir > 0 ? -20 : w + 20, y: h * (0.08 + Math.random() * 0.25), v: dir * (18 + Math.random() * 14) };
+          }
+          if (plane) {
+            plane.x += plane.v * dt / 60;
+            const blink = Math.sin(t * 6) > 0.6;
+            c.fillStyle = "rgba(255,255,255,0.8)"; c.fillRect(plane.x, plane.y, 2, 2);
+            if (blink) glow(c, plane.x + 1, plane.y + 1, 6, "255,80,80", 0.9);
+            if (plane.x < -40 || plane.x > w + 40) { plane = null; nextPlane = t + 25 + Math.random() * 35; }
+          }
+        },
+      };
+    },
+
+    // 星空：天の川、またたく星、ときどき流れ星
+    space() {
+      const R = rng(202);
+      const [bgC, b] = offscreen(w, h);
+      b.fillStyle = vgrad(b, [[0, "#020309"], [0.6, "#060a1c"], [1, "#0b0b22"]]);
+      b.fillRect(0, 0, w, h);
+      const nebula = [["120,70,200", 0.12], ["40,140,190", 0.1], ["200,80,140", 0.07]];
+      nebula.forEach(([c, a]) => glow(b, R() * w, R() * h, Math.max(w, h) * (0.3 + R() * 0.3), c, a));
+      // 天の川：斜めの帯に細かい星と淡い光
+      const ang = -0.5, cx = w / 2, cy = h * 0.45, len = Math.hypot(w, h);
+      b.save(); b.translate(cx, cy); b.rotate(ang);
+      const band = b.createLinearGradient(0, -h * 0.18, 0, h * 0.18);
+      band.addColorStop(0, "rgba(180,170,255,0)"); band.addColorStop(0.5, "rgba(190,180,255,0.12)"); band.addColorStop(1, "rgba(180,170,255,0)");
+      b.fillStyle = band; b.fillRect(-len / 2, -h * 0.18, len, h * 0.36);
+      for (let i = 0; i < 2600; i++) {
+        const x = (R() - 0.5) * len, y = (R() + R() + R() - 1.5) * h * 0.12;
+        b.fillStyle = `rgba(230,230,255,${0.15 + R() * 0.45})`; b.fillRect(x, y, R() < 0.9 ? 1 : 1.6, R() < 0.9 ? 1 : 1.6);
+      }
+      b.restore();
+      for (let i = 0; i < 700; i++) {
+        const s = R() < 0.92 ? 1 : 1.8;
+        b.fillStyle = `rgba(${R() < 0.2 ? "255,220,200" : R() < 0.3 ? "190,210,255" : "255,255,255"},${0.25 + R() * 0.6})`;
+        b.fillRect(R() * w, R() * h, s, s);
+      }
+      const twinkle = Array.from({ length: 70 }, () => ({ x: R() * w, y: R() * h, s: 1 + R() * 1.6, ph: R() * 10, sp: 1 + R() * 3 }));
+      let shoot = null, nextShoot = 6;
+      return {
+        label: "星空",
+        light: { fog: 0x05070f, key: 0xe8eeff, keyI: 1.15, rim: 0x9a8cff, sky: 0xb8c4ff, ground: 0x05060f },
+        draw(c, t, dt) {
+          c.drawImage(bgC, 0, 0, w, h);
+          for (const s of twinkle) {
+            const a = 0.35 + 0.65 * Math.abs(Math.sin(t * s.sp * 0.5 + s.ph));
+            c.fillStyle = `rgba(255,255,255,${a})`; c.fillRect(s.x, s.y, s.s, s.s);
+            if (s.s > 2) glow(c, s.x, s.y, 5, "200,210,255", a * 0.4);
+          }
+          if (!shoot && t > nextShoot && !reduceMotion) {
+            shoot = { x: Math.random() * w * 0.8 + w * 0.2, y: Math.random() * h * 0.4, vx: -(300 + Math.random() * 300), vy: 160 + Math.random() * 120, life: 0 };
+          }
+          if (shoot) {
+            shoot.life += dt / 60;
+            const sec = dt / 60;
+            shoot.x += shoot.vx * sec; shoot.y += shoot.vy * sec;
+            const tail = c.createLinearGradient(shoot.x, shoot.y, shoot.x - shoot.vx * 0.18, shoot.y - shoot.vy * 0.18);
+            tail.addColorStop(0, `rgba(255,255,255,${0.9 * (1 - shoot.life)})`); tail.addColorStop(1, "rgba(255,255,255,0)");
+            c.strokeStyle = tail; c.lineWidth = 1.6;
+            c.beginPath(); c.moveTo(shoot.x, shoot.y); c.lineTo(shoot.x - shoot.vx * 0.18, shoot.y - shoot.vy * 0.18); c.stroke();
+            if (shoot.life > 1) { shoot = null; nextShoot = t + 8 + Math.random() * 18; }
+          }
+        },
+      };
+    },
+
+    // 雲の上：雲海と空の色（朝焼け・青空・夕焼け）
+    sky(variant) {
+      const P = {
+        dawn: {
+          label: "雲の上（朝焼け）", sky: [[0, "#141c44"], [0.35, "#4a3f7a"], [0.62, "#c97a8a"], [0.78, "#ffb98a"]],
+          sun: [0.76, 0.6, "255,214,160"], cloud: ["255,214,200", "120,96,150"],
+          light: { fog: 0x9a7090, key: 0xffd2b0, keyI: 1.5, rim: 0xff9a70, sky: 0xffd8c0, ground: 0x3a3060 },
+        },
+        day: {
+          label: "雲の上（青空）", sky: [[0, "#123a72"], [0.45, "#3f78b6"], [0.75, "#8fbde0"]],
+          sun: [0.78, 0.14, "255,255,240"], cloud: ["250,252,255", "150,172,200"],
+          light: { fog: 0x86b2d8, key: 0xffffff, keyI: 1.6, rim: 0xc0e6ff, sky: 0xe0f0ff, ground: 0x5a7090 },
+        },
+        sunset: {
+          label: "雲の上（夕焼け）", sky: [[0, "#120f30"], [0.35, "#45285a"], [0.6, "#b0485a"], [0.78, "#ff9a5a"]],
+          sun: [0.24, 0.62, "255,170,100"], cloud: ["255,184,140", "92,52,84"],
+          light: { fog: 0x8a4a5a, key: 0xffb080, keyI: 1.5, rim: 0xff7040, sky: 0xffc0a0, ground: 0x301838 },
+        },
+      }[variant] || {};
+      const R = rng(variant === "day" ? 303 : variant === "dawn" ? 304 : 305);
+      const [bgC, b] = offscreen(w, h);
+      b.fillStyle = vgrad(b, P.sky); b.fillRect(0, 0, w, h);
+      const [sx, sy, sc] = P.sun;
+      glow(b, sx * w, sy * h, Math.max(w, h) * 0.6, sc, 0.35);
+      glow(b, sx * w, sy * h, Math.max(w, h) * 0.12, sc, 0.7);
+      b.fillStyle = `rgba(${sc},0.95)`; b.beginPath(); b.arc(sx * w, sy * h, Math.min(w, h) * 0.03, 0, Math.PI * 2); b.fill();
+      // 上空の薄い筋雲
+      for (let i = 0; i < 8; i++) {
+        b.save(); b.translate(R() * w, h * (0.08 + R() * 0.35)); b.scale(1, 0.12);
+        glow(b, 0, 0, w * (0.15 + R() * 0.2), P.cloud[0], 0.12 + R() * 0.1);
+        b.restore();
+      }
+      // 雲海：3層。横に2画面ぶんの幅で描いて、ゆっくり流す（左右はつながるように描く）
+      const seaTop = h * 0.62;
+      const clouds = [0, 1, 2].map((li) => {
+        // 低い解像度で描いてから引き伸ばすと、自然にぼけて綿のような質感になる
+        const K = 0.35;
+        const LW = w * 2, LH = h - seaTop + h * 0.1;
+        const [cC, cc] = offscreen(LW * K, LH * K);
+        cc.scale(K, K);
+        const base = LH * (0.35 + li * 0.18);
+        const puffs = 150 + li * 60;
+        for (let i = 0; i < puffs; i++) {
+          const x = R() * LW, y = base + (R() - 0.3) * LH * 0.22, r = (25 + R() * 80) * (0.7 + li * 0.25);
+          for (const dx of [0, LW, -LW]) {
+            cc.save(); cc.translate(x + dx, y); cc.scale(1.4, 0.7);
+            const g = cc.createRadialGradient(0, -r * 0.3, r * 0.05, 0, 0, r);
+            g.addColorStop(0, `rgba(${P.cloud[0]},${0.55 - li * 0.05})`);
+            g.addColorStop(0.55, `rgba(${P.cloud[1]},0.3)`);
+            g.addColorStop(1, `rgba(${P.cloud[1]},0)`);
+            cc.fillStyle = g; cc.beginPath(); cc.arc(0, 0, r, 0, Math.PI * 2); cc.fill();
+            cc.restore();
+          }
+        }
+        const fill = cc.createLinearGradient(0, base, 0, base + LH * 0.4);
+        fill.addColorStop(0, `rgba(${P.cloud[1]},0)`);
+        fill.addColorStop(1, `rgba(${P.cloud[1]},${0.75 + li * 0.1})`);
+        cc.fillStyle = fill; cc.fillRect(0, base, LW, LH);
+        return { c: cC, LW, LH, y: seaTop - h * 0.1 + li * h * 0.05, speed: 4 + li * 6, x: R() * LW };
+      });
+      return {
+        label: P.label, light: P.light,
+        draw(c, t, dt) {
+          c.drawImage(bgC, 0, 0, w, h);
+          for (const L of clouds) {
+            if (!reduceMotion) L.x = (L.x + L.speed * dt / 60) % L.LW;
+            c.drawImage(L.c, -L.x, L.y, L.LW, L.LH);
+            c.drawImage(L.c, -L.x + L.LW, L.y, L.LW, L.LH);
+          }
+        },
+      };
+    },
+
+    // 雨の夜：ぼやけた街の光、降る雨、ガラスを伝うしずく、ときどき遠い稲光
+    rain() {
+      const R = rng(404);
+      const [bgC, b] = offscreen(w, h);
+      b.fillStyle = vgrad(b, [[0, "#04070d"], [0.6, "#0b1322"], [1, "#132036"]]);
+      b.fillRect(0, 0, w, h);
+      for (let i = 0; i < 45; i++) {
+        const warm = R() < 0.55;
+        glow(b, R() * w, h * (0.35 + R() * 0.65), 12 + R() * 55, warm ? "255,190,120" : "110,170,255", 0.1 + R() * 0.2);
+      }
+      const drops = Array.from({ length: Math.round((w * h) / 4500) }, () => ({ x: R() * w, y: R() * h, v: 600 + R() * 500, l: 10 + R() * 18, a: 0.08 + R() * 0.22 }));
+      const beads = Array.from({ length: Math.round((w * h) / 16000) }, () => ({ x: R() * w, y: R() * h, r: 1.2 + Math.pow(R(), 2) * 4.5, slide: 0 }));
+      let flash = 0, nextFlash = 20 + R() * 30;
+      return {
+        label: "雨の夜",
+        light: { fog: 0x0e1626, key: 0xc4d2ff, keyI: 1.0, rim: 0x6aa0ff, sky: 0x9ab0d8, ground: 0x0a1018 },
+        draw(c, t, dt) {
+          const sec = dt / 60;
+          c.drawImage(bgC, 0, 0, w, h);
+          c.lineWidth = 1;
+          for (const d of drops) {
+            if (!reduceMotion) { d.y += d.v * sec; d.x -= d.v * sec * 0.12; }
+            if (d.y > h + 20) { d.y = -20; d.x = Math.random() * (w + 60); }
+            c.strokeStyle = `rgba(170,195,230,${d.a})`;
+            c.beginPath(); c.moveTo(d.x, d.y); c.lineTo(d.x + d.l * 0.12, d.y - d.l); c.stroke();
+          }
+          for (const bd of beads) {
+            if (!reduceMotion && bd.r > 3.6 && Math.random() < 0.002) bd.slide = 40 + Math.random() * 60;
+            if (bd.slide > 0) {
+              const dy = Math.min(bd.slide, 70 * sec); bd.y += dy; bd.slide -= dy;
+              c.strokeStyle = "rgba(190,210,240,0.08)"; c.lineWidth = bd.r * 0.8;
+              c.beginPath(); c.moveTo(bd.x, bd.y - 30); c.lineTo(bd.x, bd.y); c.stroke();
+              if (bd.y > h + 10) { bd.y = -10; bd.x = Math.random() * w; }
+            }
+            c.fillStyle = "rgba(20,30,50,0.35)"; c.beginPath(); c.arc(bd.x, bd.y, bd.r, 0, Math.PI * 2); c.fill();
+            c.fillStyle = "rgba(220,235,255,0.35)"; c.beginPath(); c.arc(bd.x - bd.r * 0.3, bd.y - bd.r * 0.3, bd.r * 0.35, 0, Math.PI * 2); c.fill();
+          }
+          if (!reduceMotion && t > nextFlash) { flash = 1; nextFlash = t + 25 + Math.random() * 40; }
+          if (flash > 0) {
+            c.fillStyle = `rgba(200,215,255,${flash * 0.18})`; c.fillRect(0, 0, w, h);
+            flash = Math.max(0, flash - sec * 2.5);
+          }
+        },
+      };
+    },
+  };
+
+  // ---------- 場所の選び方 ----------
+  // 時間帯ごとの候補（「シーン名:種類」）。電脳空間は昼も夜も行ける
+  function poolForNow() {
+    const hr = new Date().getHours();
+    if (hr >= 5 && hr < 8) return ["sky:dawn"];
+    if (hr >= 8 && hr < 16) return ["sky:day", "cyber"];
+    if (hr >= 16 && hr < 19) return ["sky:sunset"];
+    return ["city", "space", "rain", "cyber"];
+  }
+  function build(id) {
+    const [name, variant] = id.split(":");
+    const s = SCENES[name](variant);
+    s.id = id;
+    return s;
+  }
+  const forced = new URLSearchParams(location.search).get("scene"); // 動作確認用： ?scene=space など
+  let current = null, previous = null, fade = 1;
+  function announce(s) {
+    document.body.dataset.scene = s.id.split(":")[0];
+    window.__pallasScene = s.light;
+    window.dispatchEvent(new CustomEvent("pallas:scene", { detail: s.light }));
+    const el = document.getElementById("place");
+    if (el) el.textContent = s.label;
+  }
+  function setScene(id, withFade) {
+    previous = withFade ? current : null;
+    current = build(id);
+    fade = withFade ? 0 : 1;
+    announce(current);
+  }
+  function pickNext() {
+    const pool = poolForNow();
+    const choices = pool.filter((id) => id !== current?.id);
+    return choices.length ? choices[Math.floor(Math.random() * choices.length)] : pool[0];
+  }
 
   function resize() {
-    dpr = Math.min(window.devicePixelRatio || 1, 2);
+    dpr = Math.min(window.devicePixelRatio || 1, 1.5);
     w = window.innerWidth; h = window.innerHeight;
     canvas.width = w * dpr; canvas.height = h * dpr;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    const count = Math.min(140, Math.max(45, Math.round((w * h) / 8000)));
-    nodes = Array.from({ length: count }, () => ({
-      x: Math.random() * w, y: Math.random() * h,
-      vx: (Math.random() - 0.5) * 0.25, vy: (Math.random() - 0.5) * 0.25,
-      r: Math.random() * 1.6 + 0.8, phase: Math.random() * Math.PI * 2,
-    }));
+    // 画面サイズが変わったら、今の場所を描き直す
+    if (current) { current = build(current.id); previous = null; fade = 1; }
   }
   window.addEventListener("resize", resize);
   resize();
+  setScene(forced || pickNext(), false);
 
-  // 話している間は、パラスの位置から波紋を広げる
+  // ---------- 移動（気まぐれ・時間帯の変化） ----------
+  // パラスが奥へ飛び去る → 景色が切り替わる → 新しい場所で戻ってくる
+  let nextWhim = performance.now() / 1000 + 360 + Math.random() * 360;
+  let traveling = false;
+  function travel(toId) {
+    if (traveling) return;
+    traveling = true;
+    window.dispatchEvent(new CustomEvent("pallas:travel", { detail: { phase: "depart" } }));
+    setTimeout(() => {
+      setScene(toId, true);
+      setTimeout(() => {
+        window.dispatchEvent(new CustomEvent("pallas:travel", { detail: { phase: "arrive" } }));
+        traveling = false;
+      }, 1200);
+    }, 1600);
+  }
+  // ほかの機能（将来の「〇〇に行こう」など）や動作確認から移動を始めるための入口
+  // 頼まれて移動した場所には、時間帯に合わなくてもしばらく（30分）とどまる
+  let stayUntil = 0;
+  window.pallasTravelTo = (id) => {
+    if (!SCENES[String(id).split(":")[0]]) return;
+    stayUntil = performance.now() / 1000 + 1800;
+    travel(id);
+  };
+  setInterval(() => {
+    if (forced || traveling) return;
+    if ((document.body.dataset.state || "idle") !== "idle") return; // 会話中は移動しない
+    const now = performance.now() / 1000;
+    if (now < stayUntil) return;
+    const pool = poolForNow();
+    if (!pool.includes(current.id)) { travel(pickNext()); return; }       // 時間帯が変わった
+    if (now > nextWhim && pool.length > 1) {                             // 気まぐれ
+      nextWhim = now + 360 + Math.random() * 360;
+      travel(pickNext());
+    }
+  }, 5000);
+
+  // ---------- 会話の様子を景色に重ねる ----------
   function center() {
     const d = document.getElementById("drone");
     const r = (d && d.offsetParent ? d : document.querySelector(".orb-wrap")).getBoundingClientRect();
@@ -1490,52 +1883,44 @@ if (!Recognition) {
   let prev = performance.now();
   function frame(now) {
     const dt = Math.min((now - prev) / 16.67, 3); prev = now;
-    const state = document.body.dataset.state || "idle";
-    const target = COLORS[state] || COLORS.idle;
-    for (let i = 0; i < 3; i++) col[i] += (target[i] - col[i]) * 0.05;
-    const [r, g, b] = col.map(Math.round);
-    const speed = (state === "thinking" ? 3 : state === "listening" ? 1.6 : 1) * (reduceMotion ? 0 : 1);
-    const linkDist = Math.min(150, Math.max(90, w / 9));
-
-    ctx.clearRect(0, 0, w, h);
-
-    // 粒子の移動
-    for (const n of nodes) {
-      n.x += n.vx * speed * dt; n.y += n.vy * speed * dt;
-      if (n.x < -20) n.x = w + 20; else if (n.x > w + 20) n.x = -20;
-      if (n.y < -20) n.y = h + 20; else if (n.y > h + 20) n.y = -20;
-    }
-    // 粒子どうしをつなぐ線
-    ctx.lineWidth = 1;
-    for (let i = 0; i < nodes.length; i++) {
-      const a = nodes[i];
-      for (let j = i + 1; j < nodes.length; j++) {
-        const c = nodes[j];
-        const dx = a.x - c.x, dy = a.y - c.y;
-        const d2 = dx * dx + dy * dy;
-        if (d2 < linkDist * linkDist) {
-          const alpha = (1 - Math.sqrt(d2) / linkDist) * 0.32;
-          ctx.strokeStyle = `rgba(${r},${g},${b},${alpha})`;
-          ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(c.x, c.y); ctx.stroke();
-        }
-      }
-    }
-    // 粒子（またたく）
     const t = now / 1000;
-    for (const n of nodes) {
-      const tw = 0.55 + 0.4 * Math.sin(t * (state === "thinking" ? 5 : 1.5) + n.phase);
-      ctx.fillStyle = `rgba(${r},${g},${b},${tw})`;
-      ctx.beginPath(); ctx.arc(n.x, n.y, n.r, 0, Math.PI * 2); ctx.fill();
+    const state = document.body.dataset.state || "idle";
+    const target = STATE_COLORS[state] || STATE_COLORS.idle;
+    for (let i = 0; i < 3; i++) col[i] += (target[i] - col[i]) * 0.05;
+    const env = {
+      state, col: col.map(Math.round),
+      speed: (state === "thinking" ? 3 : state === "listening" ? 1.6 : 1) * (reduceMotion ? 0 : 1),
+    };
+
+    // 景色（切り替え中は前の場所から新しい場所へ重ねてなじませる）
+    if (previous && fade < 1) {
+      previous.draw(ctx, t, dt, env);
+      ctx.globalAlpha = fade;
+      current.draw(ctx, t, dt, env);
+      ctx.globalAlpha = 1;
+      fade = Math.min(1, fade + dt / 60 / 1.4);
+      if (fade >= 1) previous = null;
+    } else {
+      current.draw(ctx, t, dt, env);
     }
+
+    // 考え中・聞いているときは、画面のふちに色をにじませる（電脳空間以外）
+    if (current.id !== "cyber" && state !== "idle" && state !== "speaking") {
+      const [r, g, b] = env.col;
+      const v = ctx.createRadialGradient(w / 2, h * 0.35, Math.min(w, h) * 0.3, w / 2, h * 0.35, Math.max(w, h) * 0.8);
+      v.addColorStop(0, `rgba(${r},${g},${b},0)`); v.addColorStop(1, `rgba(${r},${g},${b},0.22)`);
+      ctx.fillStyle = v; ctx.fillRect(0, 0, w, h);
+    }
+
     // 発話の波紋
+    const [r, g, b] = env.col;
     if (state === "speaking" && now - lastPulse > 900) { pulses.push({ ...center(), t: 0 }); lastPulse = now; }
     pulses = pulses.filter((p) => p.t < 1);
     for (const p of pulses) {
       p.t += 0.012 * dt;
-      const rad = 60 + p.t * Math.max(w, h) * 0.45;
       ctx.strokeStyle = `rgba(${r},${g},${b},${(1 - p.t) * 0.35})`;
       ctx.lineWidth = 1.5;
-      ctx.beginPath(); ctx.arc(p.x, p.y, rad, 0, Math.PI * 2); ctx.stroke();
+      ctx.beginPath(); ctx.arc(p.x, p.y, 60 + p.t * Math.max(w, h) * 0.45, 0, Math.PI * 2); ctx.stroke();
     }
     requestAnimationFrame(frame);
   }
@@ -1570,7 +1955,8 @@ try {
   camera.position.set(0, 0.2, 4.6);
   camera.lookAt(0, 0, 0);
 
-  scene.add(new THREE.HemisphereLight(0xbfd9ff, 0x0b0f17, 0.5));
+  const hemiLight = new THREE.HemisphereLight(0xbfd9ff, 0x0b0f17, 0.5);
+  scene.add(hemiLight);
   const keyLight = new THREE.DirectionalLight(0xffffff, 1.3);
   keyLight.position.set(2, 3, 4);
   scene.add(keyLight);
@@ -1799,6 +2185,19 @@ try {
   // --- 空間を飛び回る動き ---
   // 奥行きの演出：遠くへ行くほど背景色にかすむ
   scene.fog = new THREE.Fog(0x0b1220, 7, 14);
+  // 今いる場所に合わせて、照明と霧の色を少しずつ変える（背景のスクリプトから合図が来る）
+  const sceneLight = {
+    fog: new THREE.Color(0x0b1220), key: new THREE.Color(0xffffff), keyI: 1.3,
+    rim: new THREE.Color(0x7cc4ff), sky: new THREE.Color(0xbfd9ff), ground: new THREE.Color(0x0b0f17),
+  };
+  const sceneTarget = { ...sceneLight, fog: sceneLight.fog.clone(), key: sceneLight.key.clone(), rim: sceneLight.rim.clone(), sky: sceneLight.sky.clone(), ground: sceneLight.ground.clone() };
+  function setSceneLight(l) {
+    if (!l) return;
+    sceneTarget.fog.set(l.fog); sceneTarget.key.set(l.key); sceneTarget.keyI = l.keyI;
+    sceneTarget.rim.set(l.rim); sceneTarget.sky.set(l.sky); sceneTarget.ground.set(l.ground);
+  }
+  setSceneLight(window.__pallasScene);
+  window.addEventListener("pallas:scene", (e) => setSceneLight(e.detail));
   const motion = {
     pos: new THREE.Vector3(),
     vel: new THREE.Vector3(),
@@ -1843,6 +2242,21 @@ try {
   }
   // 褒められたり感謝されたりしたら、誇らしげに宙返り（メインのスクリプトから合図が来る）
   window.addEventListener("pallas:proud", () => setTimeout(startFlip, 300));
+  // 場所の移動：奥へ飛び去り、景色が変わったら遠くから戻ってくる
+  window.addEventListener("pallas:travel", (e) => {
+    const t = clock.elapsedTime;
+    if (e.detail?.phase === "depart") {
+      motion.departUntil = t + 2.6;
+      motion.target.set((Math.random() < 0.5 ? -1 : 1) * 1.2, 0.6, -10);
+      if (!reduceMotion && Math.random() < 0.5) motion.barrel = { t: 0, dur: 1.1, dir: Math.random() < 0.5 ? -1 : 1 };
+    } else if (e.detail?.phase === "arrive") {
+      motion.departUntil = 0;
+      motion.pos.set((Math.random() < 0.5 ? -1 : 1) * 2, 0.8, -10);
+      motion.vel.set(0, 0, 3);
+      motion.target.set(0, 0.05, Math.min(-0.3, nearestZ()));
+      motion.nextWaypoint = t + 4;
+    }
+  });
 
   // --- アニメーション ---
   const clock = new THREE.Clock();
@@ -1867,7 +2281,9 @@ try {
     // 状態ごとの行き先：待機中は巡回、聞くときと話すときは手前に来る、考え中は少し下がって旋回
     const zNear = nearestZ();
     let stiff = 1.7, maxSpeed = 2.4;
-    if (state === "idle") {
+    if (motion.departUntil && t < motion.departUntil) {
+      stiff = 1.6; maxSpeed = 7; // 飛び去り中は行き先を変えない
+    } else if (state === "idle") {
       if (t > motion.nextWaypoint) pickWaypoint(t);
       if (reduceMotion) motion.target.set(0, 0, 0);
     } else if (state === "listening") {
@@ -1974,7 +2390,15 @@ try {
       eyeMat.emissive.copy(base.eyeColor).lerp(purple, cur.purple * 0.8);
       eyeMat.emissiveIntensity = base.eyeIntensity * (glow + talk * 0.4);
     }
-    rimLight.color.set(0x7cc4ff).lerp(new THREE.Color(0xb48cff), cur.purple);
+    // 場所の照明へなじませる
+    const lk = 1 - Math.exp(-dt * 1.5);
+    sceneLight.fog.lerp(sceneTarget.fog, lk); sceneLight.key.lerp(sceneTarget.key, lk);
+    sceneLight.rim.lerp(sceneTarget.rim, lk); sceneLight.sky.lerp(sceneTarget.sky, lk); sceneLight.ground.lerp(sceneTarget.ground, lk);
+    sceneLight.keyI = lerp(sceneLight.keyI, sceneTarget.keyI, lk);
+    scene.fog.color.copy(sceneLight.fog);
+    keyLight.color.copy(sceneLight.key); keyLight.intensity = sceneLight.keyI;
+    hemiLight.color.copy(sceneLight.sky); hemiLight.groundColor.copy(sceneLight.ground);
+    rimLight.color.copy(sceneLight.rim).lerp(purple, cur.purple);
 
     // スラスター
     const thrust = 1 + Math.sin(t * 9) * 0.12 + talk * 0.25;
