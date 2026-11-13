@@ -10,7 +10,12 @@ const ALLOWED_ORIGINS = [
   "http://localhost:8000",
 ];
 
-const FISH_TTS_URL = "https://api.fish.audio/v1/tts";
+const FISH_API = "https://api.fish.audio";
+// 中継してよい入口と、指定がないときのモデル
+const ROUTES = {
+  "/v1/tts": "s2.1-pro-free",     // 声を作る（無料モデル）
+  "/v1/asr": "transcribe-1-pro",  // 声を文字にする（有料・ごく少額）
+};
 
 export default {
   async fetch(request, env) {
@@ -32,7 +37,7 @@ export default {
     }
 
     const url = new URL(request.url);
-    if (request.method !== "POST" || url.pathname !== "/v1/tts") {
+    if (request.method !== "POST" || !Object.hasOwn(ROUTES, url.pathname)) {
       return json({ status: 404, message: "not found" }, 404, cors);
     }
 
@@ -44,12 +49,13 @@ export default {
       return json({ status: 401, message: "Fish Audio の APIキーがありません" }, 401, cors);
     }
 
-    const upstream = await fetch(FISH_TTS_URL, {
+    const upstream = await fetch(FISH_API + url.pathname, {
       method: "POST",
       headers: {
         "Authorization": auth,
-        "Content-Type": "application/json",
-        "model": request.headers.get("model") || "s2.1-pro-free",
+        // 文字起こしは音声ファイルを multipart で送るので、ブラウザが付けた形式をそのまま渡す
+        "Content-Type": request.headers.get("Content-Type") || "application/json",
+        "model": request.headers.get("model") || ROUTES[url.pathname],
       },
       body: request.body,
     });

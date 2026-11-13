@@ -10,6 +10,9 @@ Fish Audio の API はブラウザから直接呼べないため、Cloudflare Wo
 
 パラスは無料モデル `s2.1-pro-free` を使うので、クレジットを買わなくても声を作れます（公正利用の範囲内）。
 
+iPhone・iPad では、マイクの声を文字にするのにも Fish Audio（`transcribe-1-pro`）を使います。
+こちらは有料（1時間あたり0.36ドル、1回話しかけて0.1円以下）なので、Fish Audio の API Billing で少額のクレジットを追加してください。
+
 ## 2. Cloudflare に中継サーバーを置く
 
 1. https://dash.cloudflare.com でアカウントを作る（無料）
@@ -34,6 +37,10 @@ Fish Audio の API はブラウザから直接呼べないため、Cloudflare Wo
 APIキーをブラウザに置きたくない場合は、Cloudflare の Worker の
 **Settings → Variables and Secrets** に `FISH_API_KEY` という名前のシークレットとしてキーを登録してください。
 その場合、パラスの設定の「Fish Audio の APIキー」は空欄で動きます。
+
+## 中継サーバーのコードを更新するとき
+
+`fish-relay.js` が更新されたら（例：文字起こしの入口 `/v1/asr` の追加）、Cloudflare の Worker の **Edit code** で中身を貼り替えて **Deploy** してください。
 
 ## 自分のPCで動かすときなど
 

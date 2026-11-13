@@ -332,6 +332,15 @@
         <option value="fish">Fish Audio</option>
       </select>
     </div>
+    <div class="field">
+      <label for="asrEngine">マイクの聞き取り方</label>
+      <select id="asrEngine">
+        <option value="auto">自動（iPhone・iPad は Fish Audio）</option>
+        <option value="browser">ブラウザ標準の音声認識（無料）</option>
+        <option value="fish">Fish Audio の文字起こし（1回0.1円以下）</option>
+      </select>
+      <div class="hint">iPhone・iPad の標準の音声認識は、パラスが話したあと数分聞き取れなくなるため、Fish Audio の文字起こしを使います。Fish Audio のクレジットと、下の中継サーバーの設定が必要です。</div>
+    </div>
     <div id="fishFields">
       <div class="field">
         <label for="fishVoice">パラスの声（Fish Audio）</label>
@@ -475,7 +484,7 @@ const store = {
 };
 const settings = Object.assign(
   { apiKey: "", voiceURI: "", rate: 1.1, pitch: 1.0, autoListen: false, model: "haiku", autoResetMin: 60, showTiming: true, diagLog: false,
-    ttsEngine: "browser", fishRelayUrl: "", fishApiKey: "", fishVoice: "45c5d3723c9c42f598e4776dcfd5f02d", fishVoiceCustom: "" },
+    ttsEngine: "browser", asrEngine: "auto", fishRelayUrl: "", fishApiKey: "", fishVoice: "45c5d3723c9c42f598e4776dcfd5f02d", fishVoiceCustom: "" },
   store.get("pallas.settings", {})
 );
 // API に送る会話履歴。アシスタントの応答は content ブロックをそのまま保存する（thinking ブロックも含めて変更しない）
@@ -1015,9 +1024,21 @@ function audioStateText() {
   return `${a} ${t}${audioCtx ? ` WebAudio:${audioCtx.state}` : ""}${mode}`;
 }
 
+// どの方法で聞き取るか。iPhone・iPad の標準の音声認識は、パラスが一度話すと数分のあいだ音を受け取らなくなるため、
+// 中継サーバーが設定されていれば、自前で録音して Fish Audio に文字起こしを頼む
+function asrEngine() {
+  const pref = settings.asrEngine || "auto";
+  if (pref === "browser") return Recognition ? "browser" : "none";
+  const fishOk = !!settings.fishRelayUrl && !!navigator.mediaDevices?.getUserMedia && typeof MediaRecorder !== "undefined";
+  if (pref === "fish") return fishOk ? "fish" : (Recognition ? "browser" : "none");
+  if (fishOk && (IS_IOS || !Recognition)) return "fish";
+  return Recognition ? "browser" : "none";
+}
+
 function startListening({ auto = false } = {}) {
-  if (!Recognition) {
-    addMsg("error", "このブラウザは音声認識に対応していません。Chrome か Safari を使うか、文字で入力してください。");
+  const engine = asrEngine();
+  if (engine === "none") {
+    addMsg("error", "このブラウザは音声認識に対応していません。文字で入力するか、設定で Fish Audio の中継サーバーを設定してください。");
     return;
   }
   if (recogActive) return;
@@ -1030,6 +1051,7 @@ function startListening({ auto = false } = {}) {
     return;
   }
   stopSpeaking();
+  if (engine === "fish") { startFishListening({ auto }); return; }
 
   const rec = new Recognition();
   recognition = rec;
@@ -1165,6 +1187,179 @@ function startListening({ auto = false } = {}) {
 }
 function stopListening() {
   if (recognition && recogActive) recognition.requestStop(true);
+}
+
+// ===== 自前の録音＋Fish Audio の文字起こし =====
+async function startFishListening({ auto = false } = {}) {
+  recogActive = true;
+  const t0 = performance.now();
+  const d = (m) => diag(`🎙 ${((performance.now() - t0) / 1000).toFixed(1)}s ${m}`);
+  d(`録音の準備（${audioStateText()}）`);
+  setState("listening", "マイクを準備しています…");
+  useConversationAudioMode();
+
+  let stream = null, ctx = null, recorder = null, chunks = [];
+  let stopped = false, cancelled = false, heard = false, peak = 0, noise = 0, noiseN = 0;
+  let lastLoud = 0, startT = 0, timer = null;
+  const ctrl = { requestStop: (userCancel) => { if (userCancel) cancelled = true; stopRec(); } };
+  recognition = ctrl;
+
+  const releaseMic = () => {
+    clearTimeout(timer);
+    try { stream?.getTracks().forEach((t) => t.stop()); } catch {}
+    try { ctx?.close(); } catch {}
+    stream = null; ctx = null;
+  };
+  const endSession = () => {
+    recogActive = false;
+    listening = false;
+    if (recognition === ctrl) recognition = null;
+  };
+  function stopRec() {
+    if (stopped) return;
+    stopped = true;
+    if (recorder && recorder.state !== "inactive") { try { recorder.stop(); } catch { finish(); } }
+    else finish();
+  }
+
+  async function finish() {
+    releaseMic();
+    const spoke = heard && !cancelled;
+    d(`録音終了（声:${heard ? "あり" : "なし"} 最大音量:${peak.toFixed(3)}${cancelled ? " 取り消し" : ""}）`);
+    if (!spoke) {
+      endSession();
+      setState("idle", "マイクを押して話しかけてください");
+      if (!cancelled && !auto) addMsg("system", "声が聞き取れませんでした。もう一度マイクを押して話しかけてください。");
+      return;
+    }
+    const blob = new Blob(chunks, { type: recorder?.mimeType || "audio/webm" });
+    d(`文字起こしへ送信（${Math.round(blob.size / 1024)}KB）`);
+    setState("thinking", "文字にしています…");
+    const pending = addMsg("user interim", "（文字にしています…）");
+    try {
+      const text = await transcribeFish(blob);
+      d(`文字起こし完了：「${text}」`);
+      pending.remove();
+      endSession();
+      recogEndAt = performance.now();
+      if (text) send(text);
+      else { setState("idle", "マイクを押して話しかけてください"); addMsg("system", "声が聞き取れませんでした。もう一度話しかけてください。"); }
+    } catch (err) {
+      pending.remove();
+      endSession();
+      setState("idle", "マイクを押して話しかけてください");
+      d(`文字起こし失敗：${err.status ?? ""} ${err.message}`);
+      const s = err.status;
+      addMsg("error",
+        s === 402 ? "Fish Audio のクレジットが足りません（文字起こしは有料です）。Fish Audio でクレジットを追加してください。" :
+        s === 401 ? "Fish Audio の APIキーが無効です。設定を確認してください。" :
+        s === 404 ? "中継サーバーが文字起こしに対応していません。Cloudflare の中継サーバーのコードを新しいものに貼り替えてください。" :
+        s === 429 ? "Fish Audio が混み合っています。少し待ってから話しかけてください。" :
+        s ? `文字起こしでエラーが起きました（${s}: ${err.message}）。` :
+        "中継サーバーに接続できませんでした。設定の中継サーバーのURLを確認してください。");
+    }
+  }
+
+  // マイクを取得
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
+  } catch (err) {
+    d(`マイクを取得できない：${err.name}`);
+    endSession();
+    setState("idle", "マイクを押して話しかけてください");
+    addMsg("error", err.name === "NotAllowedError"
+      ? "マイクの使用が許可されていません。ブラウザの設定でマイクを許可してください。"
+      : `マイクを使えませんでした（${err.name}）。`);
+    return;
+  }
+  if (cancelled || stopped) { releaseMic(); endSession(); setState("idle", "マイクを押して話しかけてください"); return; }
+  d("マイクを取得");
+
+  // 録音（ブラウザが対応している形式を選ぶ。Fish Audio はどれも受け付ける）
+  const mime = ["audio/mp4", "audio/webm;codecs=opus", "audio/webm", "audio/ogg;codecs=opus"]
+    .find((m) => MediaRecorder.isTypeSupported?.(m)) || "";
+  try {
+    recorder = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined);
+  } catch (err) {
+    d(`録音を開始できない：${err.message}`);
+    releaseMic(); endSession();
+    setState("idle", "マイクを押して話しかけてください");
+    addMsg("error", "このブラウザでは録音できませんでした。");
+    return;
+  }
+  recorder.ondataavailable = (e) => { if (e.data && e.data.size) chunks.push(e.data); };
+  recorder.onstop = () => finish();
+
+  // 音量を測る（話し始め・話し終わりの判断と、診断ログ用）
+  const AC = window.AudioContext || window.webkitAudioContext;
+  const buf = new Float32Array(1024);
+  let analyser = null;
+  try {
+    ctx = new AC();
+    analyser = ctx.createAnalyser();
+    analyser.fftSize = 1024;
+    ctx.createMediaStreamSource(stream).connect(analyser);
+    await ctx.resume();
+  } catch (err) {
+    d(`音量を測れない：${err.message}`);
+  }
+
+  recorder.start(250);
+  listening = true;
+  startT = performance.now();
+  lastSpeechAt = 0;
+  setState("listening", "聞いています…");
+  d(`録音開始（${recorder.mimeType || "既定の形式"}）`);
+
+  const tick = () => {
+    if (stopped) return;
+    const now = performance.now();
+    let rms = 0;
+    if (analyser) {
+      analyser.getFloatTimeDomainData(buf);
+      let sum = 0;
+      for (let i = 0; i < buf.length; i++) sum += buf[i] * buf[i];
+      rms = Math.sqrt(sum / buf.length);
+    }
+    peak = Math.max(peak, rms);
+    // 最初の0.3秒で周りの雑音の大きさを測り、それより十分大きければ声とみなす
+    if (now - startT < 300) { noise += rms; noiseN++; }
+    const floor = noiseN ? noise / noiseN : 0;
+    const thresh = Math.max(0.012, floor * 3);
+    if (rms > thresh && now - startT >= 300) {
+      if (!heard) { heard = true; d(`声を検出（音量 ${rms.toFixed(3)}）`); setState("listening", "聞いています…"); }
+      lastLoud = now;
+      lastSpeechAt = now;
+    }
+    if (!analyser && now - startT > 6000) { heard = true; stopRec(); return; }       // 音量を測れないときは6秒で区切る
+    if (heard && now - lastLoud > SILENCE_MS) { stopRec(); return; }                  // 話し終わり
+    if (!heard && now - startT > 8000) { d("8秒間、声が入らなかった"); stopRec(); return; }
+    if (now - startT > 20000) { stopRec(); return; }                                    // 長すぎるときは区切る
+    timer = setTimeout(tick, 50);
+  };
+  tick();
+}
+
+async function transcribeFish(blob) {
+  const ext = blob.type.includes("mp4") ? "m4a" : blob.type.includes("ogg") ? "ogg" : "webm";
+  const fd = new FormData();
+  fd.append("audio", blob, `voice.${ext}`);
+  fd.append("language", "ja");
+  fd.append("ignore_timestamps", "true");
+  fd.append("diarize", "false");
+  fd.append("tag_audio_events", "false");
+  const headers = { model: "transcribe-1-pro" };
+  if (settings.fishApiKey) headers.Authorization = `Bearer ${settings.fishApiKey}`;
+  const res = await fetch(settings.fishRelayUrl.replace(/\/+$/, "") + "/v1/asr", { method: "POST", headers, body: fd });
+  if (!res.ok) {
+    let msg = "";
+    try { msg = (await res.json()).message || ""; } catch {}
+    const err = new Error(msg || `HTTP ${res.status}`);
+    err.status = res.status;
+    throw err;
+  }
+  const j = await res.json();
+  return String(j.text || "").replace(/<\|speaker:\d+\|>/g, "").trim();
 }
 
 // ===== 反応時間の計測 =====
@@ -1409,6 +1604,7 @@ function syncSettingsForm() {
   $("showTiming").checked = settings.showTiming;
   $("diagLog").checked = settings.diagLog;
   $("ttsEngine").value = settings.ttsEngine;
+  $("asrEngine").value = settings.asrEngine || "auto";
   $("fishVoice").value = FISH_VOICES.some(v => v.id === settings.fishVoice) || settings.fishVoice === "custom" ? settings.fishVoice : FISH_VOICES[0].id;
   $("fishVoiceCustom").value = settings.fishVoiceCustom;
   $("fishRelayUrl").value = settings.fishRelayUrl;
@@ -1456,16 +1652,19 @@ function readVoiceForm() {
     fishVoice: $("fishVoice").value,
     fishVoiceCustom: $("fishVoiceCustom").value.trim(),
     fishRelayUrl: $("fishRelayUrl").value.trim(),
+    asrEngine: $("asrEngine").value,
     fishApiKey: $("fishApiKey").value.trim(),
   };
 }
 function updateVoiceFields() {
   const fish = $("ttsEngine").value === "fish";
-  $("fishFields").style.display = fish ? "" : "none";
+  const asrFish = $("asrEngine").value === "fish" || ($("asrEngine").value === "auto" && IS_IOS);
+  $("fishFields").style.display = fish || asrFish ? "" : "none";
   $("browserVoiceField").style.display = fish ? "none" : "";
   $("fishVoiceCustom").style.display = $("fishVoice").value === "custom" ? "" : "none";
 }
 $("ttsEngine").addEventListener("change", updateVoiceFields);
+$("asrEngine").addEventListener("change", updateVoiceFields);
 $("fishVoice").addEventListener("change", updateVoiceFields);
 for (const v of FISH_VOICES) {
   const o = document.createElement("option");
