@@ -1132,6 +1132,8 @@ async function send(text) {
   }
   store.set("pallas.lastActivity", Date.now());
   addMsg("user", text);
+  // 褒められたり感謝されたりしたら、返事のあとに誇らしげに宙返りする
+  proudPending = /ありがと|すごい|凄い|さすが|流石|助かっ|えらい|偉い|最高|天才|ナイス|よくやった|いいね|完璧/.test(text);
   // 音声入力の直後なら、話し終わりの判定にかかった時間も記録する
   const fromVoice = recogEndAt && performance.now() - recogEndAt < 1500;
   timing = {
@@ -1255,8 +1257,10 @@ async function send(text) {
   }
 }
 
+let proudPending = false;
 function afterTurn() {
   showTiming();
+  if (proudPending) { proudPending = false; window.dispatchEvent(new Event("pallas:proud")); }
   setState("idle", "マイクを押して話しかけてください");
   if (settings.autoListen && Recognition) startListening();
 }
@@ -1792,6 +1796,54 @@ try {
   new ResizeObserver(resize).observe(box);
   resize();
 
+  // --- 空間を飛び回る動き ---
+  // 奥行きの演出：遠くへ行くほど背景色にかすむ
+  scene.fog = new THREE.Fog(0x0b1220, 7, 14);
+  const motion = {
+    pos: new THREE.Vector3(),
+    vel: new THREE.Vector3(),
+    target: new THREE.Vector3(),
+    nextWaypoint: 0,
+    yaw: 0, pitch: 0, roll: 0,
+    flip: null,      // 宙返り {t, dur}
+    barrel: null,    // きりもみ {t, dur, dir}
+    nextIdleFlip: 40 + Math.random() * 50,
+  };
+  const ease = (x) => x < 0.5 ? 4 * x * x * x : 1 - Math.pow(-2 * x + 2, 3) / 2;
+  // その奥行きで、リングがはみ出さずに動ける左右・上下の幅
+  function roomAt(z) {
+    const halfFov = THREE.MathUtils.degToRad(camera.fov / 2);
+    const dist = camera.position.z - z;
+    const halfH = Math.tan(halfFov) * dist, halfW = halfH * camera.aspect;
+    return { x: Math.max(0, halfW - 1.5), y: Math.max(0, halfH - 1.25) };
+  }
+  // 手前に来られる限界（リングが画面からはみ出さない距離）
+  function nearestZ() {
+    const halfFov = THREE.MathUtils.degToRad(camera.fov / 2);
+    const need = Math.max(1.55 / camera.aspect, 1.3);
+    return camera.position.z - need / Math.tan(halfFov);
+  }
+  function pickWaypoint(t) {
+    const r = Math.random();
+    // 3割は奥へ、残りは中ほどを巡回
+    const z = r < 0.3 ? -2.5 - Math.random() * 1.5 : -1.2 + Math.random() * 1.4;
+    const room = roomAt(z);
+    // 左右は端の方へ寄りやすく（画面の中を広く使う）
+    const side = (Math.random() < 0.5 ? -1 : 1) * (0.35 + Math.random() * 0.65);
+    motion.target.set(side * room.x, (Math.random() * 2 - 1) * room.y * 0.8 + 0.05, z);
+    motion.nextWaypoint = t + 3 + Math.random() * 4;
+    // 遠くへ移動するときは、たまにきりもみ飛行
+    if (!reduceMotion && motion.pos.distanceTo(motion.target) > 2.2 && Math.random() < 0.3 && !motion.barrel) {
+      motion.barrel = { t: 0, dur: 1.1, dir: Math.random() < 0.5 ? -1 : 1 };
+    }
+  }
+  function startFlip() {
+    if (reduceMotion || motion.flip) return;
+    motion.flip = { t: 0, dur: 1.0 };
+  }
+  // 褒められたり感謝されたりしたら、誇らしげに宙返り（メインのスクリプトから合図が来る）
+  window.addEventListener("pallas:proud", () => setTimeout(startFlip, 300));
+
   // --- アニメーション ---
   const clock = new THREE.Clock();
   const lerp = (a, b, k) => a + (b - a) * k;
@@ -1811,19 +1863,84 @@ try {
       ? Math.min(1, 0.35 + 0.35 * Math.abs(Math.sin(t * 11) * Math.sin(t * 7.3)) + speechLevel * 0.5)
       : 0;
 
-    // 浮遊
-    root.position.y = Math.sin(t * 1.4 * speed) * 0.07 * cur.bob;
-    root.rotation.z = Math.sin(t * 0.9 * speed) * 0.035 * cur.bob;
+    // ===== 移動 =====
+    // 状態ごとの行き先：待機中は巡回、聞くときと話すときは手前に来る、考え中は少し下がって旋回
+    const zNear = nearestZ();
+    let stiff = 1.7, maxSpeed = 2.4;
+    if (state === "idle") {
+      if (t > motion.nextWaypoint) pickWaypoint(t);
+      if (reduceMotion) motion.target.set(0, 0, 0);
+    } else if (state === "listening") {
+      motion.target.set(0, 0.05, Math.min(0.5, zNear)); stiff = 5; maxSpeed = 4;
+    } else if (state === "speaking") {
+      motion.target.set(0, 0, Math.min(0.35, zNear)); stiff = 4; maxSpeed = 3.5;
+      motion.nextWaypoint = t + 3; // 話し終わってからしばらくは手前にいる
+    } else if (state === "thinking") {
+      const room = roomAt(-0.8);
+      motion.target.set(Math.sin(t * 1.3) * Math.min(0.45, room.x), 0.15 + Math.cos(t * 1.3) * Math.min(0.15, room.y), -0.8);
+      stiff = 3; maxSpeed = 2.5;
+      motion.nextWaypoint = t + 2;
+    }
+    // ばねのように行き先へ（行き過ぎない程度の減衰）
+    const acc = motion.target.clone().sub(motion.pos).multiplyScalar(stiff * stiff)
+      .sub(motion.vel.clone().multiplyScalar(2 * stiff * 0.9));
+    motion.vel.addScaledVector(acc, dt * speed);
+    if (motion.vel.length() > maxSpeed) motion.vel.setLength(maxSpeed);
+    motion.pos.addScaledVector(motion.vel, dt * speed);
+    const spd = motion.vel.length();
 
-    // 視線：待機中はときどき辺りを見回し、ポインターにも少し反応する
+    // 宙返り・きりもみの進み具合
+    let flipAngle = 0, flipHop = 0, barrelAngle = 0;
+    if (motion.flip) {
+      motion.flip.t += dt;
+      const f = Math.min(motion.flip.t / motion.flip.dur, 1);
+      flipAngle = -ease(f) * Math.PI * 2;
+      flipHop = Math.sin(f * Math.PI) * 0.35;
+      if (f >= 1) motion.flip = null;
+    }
+    if (motion.barrel) {
+      motion.barrel.t += dt;
+      const f = Math.min(motion.barrel.t / motion.barrel.dur, 1);
+      barrelAngle = ease(f) * Math.PI * 2 * motion.barrel.dir;
+      if (f >= 1) motion.barrel = null;
+    }
+    // 待機中、手前近くで止まっているときに、まれに宙返り
+    if (state === "idle" && t > motion.nextIdleFlip) {
+      if (spd < 0.3 && motion.pos.z > -1.5) startFlip();
+      motion.nextIdleFlip = t + 45 + Math.random() * 60;
+    }
+
+    // 浮遊の上下ゆれを足して位置を決める
+    root.position.set(
+      motion.pos.x,
+      motion.pos.y + Math.sin(t * 1.4 * speed) * 0.07 * cur.bob + flipHop,
+      motion.pos.z,
+    );
+
+    // ===== 姿勢 =====
+    // 速く動くときは進む方向を向き（奥へ飛ぶときは背中を見せる）、止まると正面やあたりを見る
     if (t > nextGlance) {
       glance = { x: (Math.random() * 2 - 1) * 0.5, y: (Math.random() * 2 - 1) * 0.25 };
       nextGlance = t + 2.5 + Math.random() * 4;
     }
     const lookX = (pointer.x * 0.35 + glance.x * 0.5) * cur.look;
     const lookY = (pointer.y * 0.2 + glance.y * 0.5) * cur.look;
-    root.rotation.y = lerp(root.rotation.y, lookX, 1 - Math.exp(-dt * 3));
-    root.rotation.x = lerp(root.rotation.x, lookY, 1 - Math.exp(-dt * 3));
+    const travel = Math.min(1, Math.max(0, (spd - 0.35) / 0.8)) * (state === "idle" ? 1 : 0.3);
+    let headYaw = Math.atan2(motion.vel.x, motion.vel.z);
+    // 一番近い向きで回る
+    while (headYaw - motion.yaw > Math.PI) headYaw -= Math.PI * 2;
+    while (headYaw - motion.yaw < -Math.PI) headYaw += Math.PI * 2;
+    let wantYaw = lerp(lookX, headYaw, travel);
+    while (wantYaw - motion.yaw > Math.PI) wantYaw -= Math.PI * 2;
+    while (wantYaw - motion.yaw < -Math.PI) wantYaw += Math.PI * 2;
+    motion.yaw = lerp(motion.yaw, wantYaw, 1 - Math.exp(-dt * 3.5));
+    // 前のめり・横の傾き（旋回で機体を傾ける）
+    const wantPitch = lerp(lookY, Math.min(0.35, spd * 0.18) - motion.vel.y * 0.2, travel);
+    motion.pitch = lerp(motion.pitch, wantPitch, 1 - Math.exp(-dt * 4));
+    const lateral = motion.vel.x * Math.cos(motion.yaw) - motion.vel.z * Math.sin(motion.yaw);
+    const wantRoll = -lateral * 0.35 + Math.sin(t * 0.9 * speed) * 0.035 * cur.bob;
+    motion.roll = lerp(motion.roll, Math.max(-0.6, Math.min(0.6, wantRoll)), 1 - Math.exp(-dt * 4));
+    root.rotation.set(motion.pitch + flipAngle, motion.yaw, motion.roll + barrelAngle, "YXZ");
 
     // 周回するプレートと目盛り
     orbit.rotateY(cur.orbit * dt * speed);
