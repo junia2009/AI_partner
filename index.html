@@ -435,6 +435,7 @@ function renderHistory() {
 // ===== 音声合成（読み上げ） =====
 const synth = window.speechSynthesis;
 let voices = [];
+let voicesReady = false;
 let speakQueue = 0;
 let onSpeakDone = null;
 
@@ -447,6 +448,7 @@ function loadVoices() {
     sel.innerHTML = `<option value="">（日本語の声が見つかりません）</option>`;
     return;
   }
+  voicesReady = true;
   for (const v of voices) {
     const o = document.createElement("option");
     o.value = v.voiceURI;
@@ -470,25 +472,69 @@ function cleanForSpeech(text) {
     .trim();
 }
 
+// iPhone / Android / Chrome は「ユーザーが画面に触れた操作の中で一度しゃべらせる」まで
+// 読み上げをブロックすることがある。最初のタップ・キー入力で無音の発話を流して解除しておく
+let speechUnlocked = false;
+function unlockSpeech() {
+  if (speechUnlocked || !synth) return;
+  speechUnlocked = true;
+  try {
+    const u = new SpeechSynthesisUtterance("。");
+    u.volume = 0;
+    u.lang = "ja-JP";
+    synth.speak(u);
+    synth.resume();
+  } catch {}
+}
+window.addEventListener("pointerdown", unlockSpeech, { capture: true });
+window.addEventListener("keydown", unlockSpeech, { capture: true });
+
+// Chrome は読み上げ中の発話オブジェクトがメモリから消されると、途中で止まったり終了通知が来なかったりする。
+// 読み終わるまで参照を持っておく
+const liveUtterances = new Set();
+let speechErrorShown = false;
+
+function pickVoice() {
+  return voices.find(v => v.voiceURI === settings.voiceURI)
+    || voices.find(v => v.lang.toLowerCase().replace("_", "-") === "ja-jp")
+    || voices[0];
+}
+
 function speak(text) {
   const t = cleanForSpeech(text);
   if (!synth || !t) return;
+  if (!voices.length) loadVoices();
   const u = new SpeechSynthesisUtterance(t);
   u.lang = "ja-JP";
-  const v = voices.find(v => v.voiceURI === settings.voiceURI);
+  const v = pickVoice();
   if (v) u.voice = v;
   u.rate = settings.rate;
   u.pitch = settings.pitch;
   speakQueue++;
   u.onstart = () => setState("speaking", "話しています");
   const done = () => {
+    liveUtterances.delete(u);
     speakQueue = Math.max(0, speakQueue - 1);
     maybeFinishSpeaking();
   };
   // 単語の区切りごとに3Dモデルの目を光らせる
   u.onboundary = () => window.dispatchEvent(new Event("pallas:boundary"));
   u.onend = done;
-  u.onerror = done;
+  u.onerror = (e) => {
+    done();
+    // 止めたときの "interrupted" / "canceled" は正常
+    if (!speechErrorShown && e.error && e.error !== "interrupted" && e.error !== "canceled") {
+      speechErrorShown = true;
+      const hint = e.error === "not-allowed"
+        ? "ブラウザに読み上げを止められました。画面を一度タップしてから、もう一度話しかけてください。"
+        : e.error === "voice-unavailable" || e.error === "language-unavailable"
+          ? "日本語の声が使えません。端末の設定で日本語の音声を追加するか、設定から別の声を選んでください。"
+          : `読み上げでエラーが起きました（${e.error}）。`;
+      addMsg("error", hint);
+    }
+  };
+  liveUtterances.add(u);
+  if (synth.paused) synth.resume();
   synth.speak(u);
 }
 function maybeFinishSpeaking() {
@@ -778,6 +824,11 @@ $("modelSelect").addEventListener("change", (e) => {
 });
 
 // 起動
+// 数秒たっても日本語の声が見つからなければ知らせる（端末に日本語音声が入っていないと無音になる）
+setTimeout(() => {
+  if (!synth) addMsg("error", "このブラウザは読み上げに対応していません。");
+  else if (!voicesReady) addMsg("error", "この端末に日本語の読み上げ音声が見つかりません。端末の設定で日本語の音声を追加してください。");
+}, 3000);
 renderHistory();
 // レイアウト確定後（3D表示の読み込みで高さが変わる）にも最新の発言まで送る
 const scrollLogToEnd = () => { $("log").scrollTop = $("log").scrollHeight; };
