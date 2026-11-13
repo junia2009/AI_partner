@@ -781,6 +781,8 @@ function unlockFishAudio() {
     audioCtx?.resume();
     if (!fishPlaying) {
       fishAudio.src = silentWavUrl();
+      // 無音を流し終えたら、すぐにプレーヤーを空にする
+      fishAudio.onended = () => { fishAudio.onended = null; if (!fishPlaying) releaseFishAudio(); };
       fishAudio.play().catch(() => {});
     }
   } catch {}
@@ -863,9 +865,19 @@ function playBlob(blob) {
   });
 }
 
+// 再生が終わったら、音声プレーヤーを空にして端末に「もう音は使っていない」と伝える。
+// iPhone・iPad は、プレーヤーに音声が残っていると数分間マイクを渡してくれないため
+function releaseFishAudio() {
+  try {
+    fishAudio.pause();
+    fishAudio.removeAttribute("src");
+    fishAudio.load();
+  } catch {}
+}
+
 async function playNextFish() {
   const item = fishQueue.shift();
-  if (!item) { fishPlaying = false; return; }
+  if (!item) { fishPlaying = false; releaseFishAudio(); return; }
   fishPlaying = true;
   if (!item.promise) { item.promise = fetchFish(item.text, item.ctrl.signal); item.promise.catch(() => {}); }
   pumpFishFetches();
@@ -889,6 +901,7 @@ function stopFish() {
   for (const item of fishQueue) item.ctrl.abort();
   fishQueue = [];
   stopCurrentAudio?.();
+  if (!fishPlaying) releaseFishAudio();
 }
 
 // 再生中の音量をパラスの3Dモデルへ伝える
@@ -1089,7 +1102,7 @@ function startListening({ auto = false } = {}) {
   // 聞き取りの前に音まわりを止め、切り替わるのを少し待ってから開始する（話し終えて返事を流すときに再開する）
   const audioWasActive = (synth && (synth.speaking || synth.pending)) || (audioCtx && audioCtx.state === "running") || !fishAudio.paused;
   try { synth?.cancel(); } catch {}
-  try { fishAudio.pause(); } catch {}
+  if (!fishPlaying) releaseFishAudio(); else { try { fishAudio.pause(); } catch {} }
   try { audioCtx?.suspend(); } catch {}
   setTimeout(() => {
     if (finished) return;
