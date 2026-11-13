@@ -2018,15 +2018,18 @@ function silentWavUrl() {
 const IS_IOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
 
 // iPhone・iPad は、音を出すと「再生モード」になり、数分のあいだマイクに無音しか入らなくなる。
-// Safari の Audio Session API で「再生も録音もするモード」に固定して、話したあとすぐ聞けるようにする
-function useConversationAudioMode() {
+// Safari の Audio Session API で「再生も録音もするモード」にして、話したあとすぐ聞けるようにする。
+// ただし、このモードのまま Bluetooth イヤホンで音を出すと、イヤホンが通話用の低音質な接続（HFP）に
+// 切り替わり、声がノイズまじりで途切れる。そこで、自前で録音して Fish Audio で文字にする場合
+// （iPhone・iPad の標準）は、録音している間だけこのモードにし、パラスが話すときは「再生モード」に戻す。
+function setAudioMode(type) {
   try {
-    if ("audioSession" in navigator && navigator.audioSession.type !== "play-and-record") {
-      navigator.audioSession.type = "play-and-record";
-    }
+    if ("audioSession" in navigator && navigator.audioSession.type !== type) navigator.audioSession.type = type;
   } catch {}
 }
-useConversationAudioMode();
+function useConversationAudioMode() { setAudioMode("play-and-record"); }
+// パラスが話すとき：ブラウザの音声認識を使うときだけ録音モードのまま、それ以外は高音質の再生モード
+function usePlaybackAudioMode() { setAudioMode(asrEngine() === "browser" ? "play-and-record" : "playback"); }
 
 function unlockFishAudio() {
   try {
@@ -2122,7 +2125,7 @@ function playBlob(blob) {
     fishAudio.onended = () => { cleanup(); resolve(); };
     fishAudio.onerror = () => { cleanup(); reject(new Error("音声を再生できませんでした")); };
     stopCurrentAudio = () => { fishAudio.pause(); cleanup(); resolve(); };
-    useConversationAudioMode();
+    usePlaybackAudioMode();
     fishAudio.src = url;
     audioCtx?.resume();
     setState("speaking", "話しています");
@@ -2505,6 +2508,7 @@ async function startFishListening({ auto = false } = {}) {
     try { stream?.getTracks().forEach((t) => t.stop()); } catch {}
     try { ctx?.close(); } catch {}
     stream = null; ctx = null;
+    usePlaybackAudioMode(); // マイクを離したら再生モードへ（Bluetooth イヤホンを高音質に戻す）
   };
   const endSession = () => {
     recogActive = false;
