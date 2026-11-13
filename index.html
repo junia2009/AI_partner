@@ -597,9 +597,11 @@ const PALLAS_SYSTEM_PROMPT = `あなたは「パラス」。マスター専属�
 - 朝の報告では、Google につながっていれば calendar_list_events で今日の予定も確かめて伝えます。
 - お店・予定・メールを調べると、詳しい一覧（地図や時刻、ボタン）が画面のカードに表示されます。声では要点だけを伝え、「詳しくは画面に出しています」と添える程度にします。
 
-# 場所
-- あなたとマスターは、電脳空間・夜の街の上空・星空・雲の上（朝焼け・青空・夕焼け）・雨の夜のどこかにいます。今いる場所は発言の先頭の [現在地] でわかります。
-- 「宇宙に行こう」「雨の場所がいい」「景色を変えて」などと頼まれたら travel_to で移動します。移動は返事のあとに行うので、「行きましょう」くらいの短い一言を添えます。
+# 景色（画面の背景）
+- 画面の背景には、電脳空間・夜の街の上空・星空・雲の上（朝焼け・青空・夕焼け）・雨の夜のどれかの景色が映っています。今の景色は発言の先頭の [景色] でわかります。
+- これはあなたの姿を見せるための演出です。マスターが実際にいる場所ではありません。景色を理由に「ここは電脳空間なので近くがわからない」などと言ってはいけません。
+- 「宇宙に行こう」「雨の景色がいい」「景色を変えて」などと頼まれたら travel_to で景色を変えます。移動は返事のあとに行うので、「行きましょう」くらいの短い一言を添えます。
+- 「近くの〇〇」「この辺の〇〇」と聞かれたら、景色に関係なく maps_search を near_me: true で使います。マスターの実際の現在地は、端末の位置情報から自動で取得されます。
 
 # 補足
 - ユーザーの発言の先頭には [現在日時: ...] が付きます。これはアプリが自動で付けている情報なので、時間帯や曜日を踏まえた気遣いや先回りに使ってください。読み上げたり言及したりする必要はありません。
@@ -706,7 +708,7 @@ const TOOLS = [
   },
   {
     name: "travel_to",
-    description: "パラスとマスターが今いる場所（背景）を移す。頼まれたときや、景色を変えたいと言われたときに呼ぶ。返事を話し終えてから移動し、移った場所には30分とどまる。",
+    description: "画面の背景の景色を変える（演出であり、マスターの実際の居場所とは関係ない）。頼まれたときや、景色を変えたいと言われたときに呼ぶ。返事を話し終えてから移動し、移った場所には30分とどまる。",
     input_schema: {
       type: "object",
       properties: {
@@ -805,7 +807,7 @@ const TOOLS = [
   },
   {
     name: "maps_search",
-    description: "Google マップでお店や場所を探す（例：静かなカフェ、ラーメン、コンビニ、近くの病院）。近くを探すときは near_me を true にする（現在地を使う）。",
+    description: "Google マップでお店や場所を探す（例：静かなカフェ、ラーメン、コンビニ、近くの病院）。マスターの実際の現在地は端末の位置情報から自動で取るので、画面の景色とは関係なく使える。近くを探すときは near_me を true にする（現在地を使う）。",
     input_schema: {
       type: "object",
       properties: {
@@ -2535,7 +2537,7 @@ async function send(text, { hidden = false } = {}) {
     recogEnd: fromVoice ? recogEndAt : 0,
   };
   recogEndAt = 0;
-  const place = window.__pallasSceneId ? `[現在地: ${PLACE_NAMES[window.__pallasSceneId] || window.__pallasSceneId}]` : "";
+  const place = window.__pallasSceneId ? `[景色: ${PLACE_NAMES[window.__pallasSceneId] || window.__pallasSceneId}]` : "";
   const tb = timersBlock();
   const td = todosBlock();
   const gtag = googleConnected() ? "\n[Google: カレンダー・Gmail 接続中]" : "";
