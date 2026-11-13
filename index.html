@@ -452,6 +452,11 @@
       </div>
       <div class="hint">接続すると、パラスがカレンダーの予定の確認・追加と、Gmail の未読の確認・返信の下書きをできるようになります。メールを送信することはありません。</div>
     </div>
+    <div class="field">
+      <label for="googleMapsKey">Google マップ表示用のキー</label>
+      <input id="googleMapsKey" type="text" placeholder="AIza...（Maps JavaScript API 用・このサイトだけに制限したもの）" autocomplete="off">
+      <div class="hint">お店を探したときの地図を Google マップで表示します。空欄なら OpenStreetMap で表示します。</div>
+    </div>
     <div id="fishFields">
       <div class="field">
         <label for="fishVoice">パラスの声（Fish Audio）</label>
@@ -621,7 +626,7 @@ const store = {
 };
 const settings = Object.assign(
   { apiKey: "", voiceURI: "", rate: 1.1, pitch: 1.0, autoListen: false, model: "haiku", autoResetMin: 60, showTiming: true, diagLog: false,
-    ttsEngine: "browser", asrEngine: "auto", fishRelayUrl: "", googleClientId: "", fishApiKey: "", fishVoice: "45c5d3723c9c42f598e4776dcfd5f02d", fishVoiceCustom: "" },
+    ttsEngine: "browser", asrEngine: "auto", fishRelayUrl: "", googleClientId: "", googleMapsKey: "", fishApiKey: "", fishVoice: "45c5d3723c9c42f598e4776dcfd5f02d", fishVoiceCustom: "" },
   store.get("pallas.settings", {})
 );
 // API に送る会話履歴。アシスタントの応答は content ブロックをそのまま保存する（thinking ブロックも含めて変更しない）
@@ -1297,9 +1302,94 @@ function loadLeaflet() {
   });
   return leafletReady;
 }
+// Google マップ（Maps JavaScript API）。キーがあれば使い、なければ・失敗したら OpenStreetMap で描く
+let gmapsReady = null;
+let gmapsFailed = false;
+function loadGoogleMaps() {
+  if (gmapsReady) return gmapsReady;
+  gmapsReady = new Promise((resolve, reject) => {
+    window.__pallasGmapsReady = () => resolve(window.google.maps);
+    // キーが無効・このサイトで使えないとき、Google から呼ばれる
+    window.gm_authFailure = () => {
+      gmapsFailed = true;
+      addMsg("error", "Google マップのキーが使えませんでした。キーの「ウェブサイトの制限」と「Maps JavaScript API」の許可を確認してください。いまは別の地図で表示します。");
+      const p = lastPlacesForMap;
+      if (p) drawLeafletMap(p.places, p.pos);
+    };
+    const sc = document.createElement("script");
+    sc.src = `https://maps.googleapis.com/maps/api/js?key=${encodeURIComponent(settings.googleMapsKey)}&loading=async&callback=__pallasGmapsReady&language=ja&region=JP&v=weekly`;
+    sc.async = true;
+    sc.onerror = () => { gmapsReady = null; reject(new Error("Google マップを読み込めませんでした")); };
+    document.head.appendChild(sc);
+  });
+  return gmapsReady;
+}
+// 暗い配色（Google のサンプル「Night」をパラスの色に合わせて調整）
+const GMAP_DARK = [
+  { elementType: "geometry", stylers: [{ color: "#1a2233" }] },
+  { elementType: "labels.text.stroke", stylers: [{ color: "#0b0f17" }] },
+  { elementType: "labels.text.fill", stylers: [{ color: "#8a96b0" }] },
+  { featureType: "poi", elementType: "labels.icon", stylers: [{ visibility: "off" }] },
+  { featureType: "poi.park", elementType: "geometry", stylers: [{ color: "#16302a" }] },
+  { featureType: "road", elementType: "geometry", stylers: [{ color: "#2b3650" }] },
+  { featureType: "road", elementType: "geometry.stroke", stylers: [{ color: "#151c2b" }] },
+  { featureType: "road.highway", elementType: "geometry", stylers: [{ color: "#3a4970" }] },
+  { featureType: "transit", elementType: "geometry", stylers: [{ color: "#24304a" }] },
+  { featureType: "transit.station", elementType: "labels.text.fill", stylers: [{ color: "#7cc4ff" }] },
+  { featureType: "water", elementType: "geometry", stylers: [{ color: "#0d1a2e" }] },
+  { featureType: "water", elementType: "labels.text.fill", stylers: [{ color: "#4a5f86" }] },
+];
+let lastPlacesForMap = null;
+async function drawGoogleMap(places, pos) {
+  const pts = places.filter((p) => p.lat != null);
+  const gm = await loadGoogleMaps();
+  if ($("infoPanel").hidden || gmapsFailed) return false;
+  const { Map } = await gm.importLibrary("maps");
+  const { Marker } = await gm.importLibrary("marker");
+  const box = $("infoMap");
+  box.hidden = false;
+  box.innerHTML = "";
+  const map = new Map(box, {
+    disableDefaultUI: true, zoomControl: true, clickableIcons: false, gestureHandling: "greedy",
+    styles: GMAP_DARK, backgroundColor: "#0b0f17",
+  });
+  const bounds = new gm.LatLngBounds();
+  pts.forEach((p) => {
+    const i = places.indexOf(p) + 1;
+    const mk = new Marker({
+      map, position: { lat: p.lat, lng: p.lng }, title: p.name,
+      label: { text: String(i), color: "#0b0f17", fontWeight: "700", fontSize: "12px" },
+      icon: { path: gm.SymbolPath.CIRCLE, scale: 11, fillColor: "#7cc4ff", fillOpacity: 1, strokeColor: "#0b0f17", strokeWeight: 2 },
+    });
+    mk.addListener("click", () => {
+      $("infoBody").querySelectorAll(".info-item")[i - 1]?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    });
+    bounds.extend({ lat: p.lat, lng: p.lng });
+  });
+  if (pos) {
+    new Marker({
+      map, position: pos, title: "現在地", zIndex: 999,
+      icon: { path: gm.SymbolPath.CIRCLE, scale: 7, fillColor: "#4ea1ff", fillOpacity: 1, strokeColor: "#ffffff", strokeWeight: 2 },
+    });
+    bounds.extend(pos);
+  }
+  if (pts.length + (pos ? 1 : 0) > 1) map.fitBounds(bounds, 24);
+  else { map.setCenter(bounds.getCenter()); map.setZoom(16); }
+  return true;
+}
 async function drawPlacesMap(places, pos) {
+  if (!places.some((p) => p.lat != null)) return;
+  lastPlacesForMap = { places, pos };
+  if (settings.googleMapsKey && !gmapsFailed) {
+    try { if (await drawGoogleMap(places, pos)) return; } catch (err) { console.warn(err); }
+    if ($("infoPanel").hidden) return;
+  }
+  return drawLeafletMap(places, pos);
+}
+async function drawLeafletMap(places, pos) {
   const pts = places.filter((p) => p.lat != null);
   if (!pts.length) return;
+  $("infoMap").innerHTML = "";
   let L;
   try { L = await loadLeaflet(); } catch { return; }
   if ($("infoPanel").hidden) return;
@@ -2650,6 +2740,7 @@ function syncSettingsForm() {
   $("showTiming").checked = settings.showTiming;
   $("diagLog").checked = settings.diagLog;
   $("googleClientId").value = settings.googleClientId || "";
+  $("googleMapsKey").value = settings.googleMapsKey || "";
   renderGoogleStatus();
   preloadGis();
   $("morningGreeting").checked = settings.morningGreeting !== false;
@@ -2804,6 +2895,8 @@ $("settingsForm").addEventListener("submit", () => {
   settings.showTiming = $("showTiming").checked;
   settings.diagLog = $("diagLog").checked;
   settings.googleClientId = $("googleClientId").value.trim();
+  if (settings.googleMapsKey !== $("googleMapsKey").value.trim()) gmapsReady = null; // キーが変わったら読み込み直す
+  settings.googleMapsKey = $("googleMapsKey").value.trim();
   settings.morningGreeting = $("morningGreeting").checked;
   renderMorningChip();
   fishErrorShown = false;

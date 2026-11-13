@@ -70,6 +70,15 @@ APIキーをブラウザに置きたくない場合は、Cloudflare の Worker �
 2. 「API とサービス」→「認証情報」→「API キーを作成」。キーの制限で「Places API (New)」だけを許可する
 3. 使いすぎ防止：「割り当て」で Places API (New) の Text Search の1日の上限を 30 などに下げる
 
+### 3.5 地図を Google マップで表示するキー（任意）
+地図の表示は、マップ検索とは別の「Maps JavaScript API」を使います（毎月1万回の表示まで無料）。
+1. 「API とサービス」→「ライブラリ」で **Maps JavaScript API** を有効にする
+2. 「認証情報」→「API キーを作成」で、もう1つキーを作る（マップ検索のキーとは別にする）
+3. キーの制限
+   - アプリケーションの制限：「ウェブサイト」→ `https://junia2009.github.io/*` を追加
+   - API の制限：「Maps JavaScript API」だけ
+4. このキーはパラスの設定の「Google マップ表示用のキー」に入れる（ブラウザで使うキーなので、サイトの制限で守る）
+
 ### 4. 中継サーバーに鍵を登録する
 Cloudflare の Worker の **Settings → Variables and Secrets** に、種類「Secret」で次を追加して Deploy する。
 - `GOOGLE_CLIENT_ID`：クライアントID
