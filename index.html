@@ -488,6 +488,7 @@ const PALLAS_SYSTEM_PROMPT = `あなたは「パラス」。りょうさん専�
 - 内部用やシステム用のXMLタグは返答に含めないでください。
 - ツール（記憶・タイマー・移動など）を使うときは、返事の言葉は一度だけにします。ツールの前に「星空へ行きましょう」と言ったなら、ツールのあとで同じことを言い直さず、そのまま終えます。ツールの前に何も言っていなければ、ツールのあとに短く一言だけ伝えます。
 - ツールの結果の文言を、そのまま読み上げたり言い換えて繰り返したりしません。
+- 「（会話を終了しました）」「（メモしました）」のような、括弧書きの注釈や動作の説明は書きません。返事はすべて、そのまま声に出す言葉だけにします。
 - ツールで扱えないことは、推測で済ませずにそう伝えます。`;
 
 // 使えるモデル。普段は Haiku（安い・速い）、じっくり相談したいときだけ上位モデルに切り替える
@@ -756,7 +757,7 @@ function renderHistory() {
       const shown = t.replace(/^\[現在日時:[^\]]*\](\[現在地:[^\]]*\])?\s*(\[設定中のタイマー\]\n(- .*\n)*)?/, "").trim();
       if (shown) addMsg("user", shown);
     } else if (m.role === "assistant") {
-      const t = dedupeReply(m.content.filter(b => b.type === "text").map(b => b.text).join(""));
+      const t = dedupeReply(stripParens(m.content.filter(b => b.type === "text").map(b => b.text).join("")));
       if (t) addMsg("assistant", t);
     }
   }
@@ -1139,10 +1140,36 @@ function dedupeReply(text) {
     .join("");
 }
 
+// 返事の中の（）書き（「（会話を終了しました）」のような注釈や動作の説明）は、読み上げにも表示にも出さない。
+// 閉じていない（ のあとも、閉じるまでは出さない
+function stripParens(text) {
+  let depth = 0, out = "";
+  for (const ch of String(text)) {
+    if (ch === "（" || ch === "(") { depth++; continue; }
+    if (ch === "）" || ch === ")") { if (depth > 0) depth--; continue; }
+    if (depth === 0) out += ch;
+  }
+  return out.replace(/[ 　]{2,}/g, " ").replace(/^[ 　]+/gm, "");
+}
+// 少しずつ届く文字に対して、同じことをする（括弧の中にいるかを覚えておく）
+function createParenFilter() {
+  let depth = 0;
+  return (delta) => {
+    let out = "";
+    for (const ch of delta) {
+      if (ch === "（" || ch === "(") { depth++; continue; }
+      if (ch === "）" || ch === ")") { if (depth > 0) depth--; continue; }
+      if (depth === 0) out += ch;
+    }
+    return out;
+  };
+}
+
 function createSentenceSpeaker() {
   let buf = "";
   let first = true;
   const seen = [];
+  const filter = createParenFilter();
   // 読み上げる前に、すでに言った内容の繰り返しなら飛ばす
   const say = (x) => {
     if (isRepeat(x, seen)) return;
@@ -1152,7 +1179,7 @@ function createSentenceSpeaker() {
   };
   return {
     push(delta) {
-      buf += delta;
+      buf += filter(delta);
       let m;
       // 最初の1回だけは読点でも区切って、早く話し始める（短すぎる切れ端は避ける）
       if (first && (m = buf.match(/^([\s\S]{6,}?[、，,])/)) && !/[。！？!?\n]/.test(m[1])) {
@@ -1653,7 +1680,7 @@ async function send(text) {
       currentStream.on("text", (delta) => {
         if (timing && !timing.firstText) timing.firstText = performance.now();
         shownText += delta;
-        bubble.textContent = shownText;
+        bubble.textContent = stripParens(shownText);
         $("log").scrollTop = $("log").scrollHeight;
         speaker.push(delta);
       });
@@ -1695,7 +1722,7 @@ async function send(text) {
       history = [...messages, { role: "assistant", content: contentForHistory(final.content) }];
       store.set("pallas.history", history);
       if (!shownText) bubble.remove();
-      else bubble.textContent = dedupeReply(shownText); // 言い直しがあれば表示からも取り除く
+      else bubble.textContent = dedupeReply(stripParens(shownText)); // （）書きと言い直しを表示から取り除く
     }
   } catch (err) {
     speaker.flush();
