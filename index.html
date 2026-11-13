@@ -257,6 +257,15 @@
   .field input[type=range] { width: 100%; }
   .check { display: flex; gap: 8px; align-items: center; font-size: 14px; }
   .hint { font-size: 12px; color: var(--muted); margin-top: 6px; line-height: 1.6; }
+  dialog { max-height: calc(100dvh - 32px); overflow-y: auto; }
+  .memory-list { list-style: none; margin: 0; padding: 0; max-height: 220px; overflow-y: auto; border: 1px solid var(--line); border-radius: 10px; }
+  .memory-list:empty::before { content: "まだ何も覚えていません"; display: block; padding: 10px 12px; color: var(--muted); font-size: 13px; }
+  .memory-list li { display: flex; align-items: center; gap: 8px; padding: 8px 10px 8px 12px; font-size: 14px; border-bottom: 1px solid var(--line); }
+  .memory-list li:last-child { border-bottom: none; }
+  .memory-list li span { flex: 1; min-width: 0; word-break: break-word; }
+  .memory-list li button { background: transparent; border: 1px solid var(--line); border-radius: 8px; padding: 3px 8px; font-size: 12px; color: var(--muted); }
+  .memory-list li button:hover { color: var(--danger); border-color: var(--danger); }
+  .msg.memo { color: var(--accent); }
   .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 8px; }
   .primary { background: var(--accent); color: #0b0f17; border: none; border-radius: 10px; padding: 9px 18px; font-weight: 600; }
   .ghost { background: transparent; border: 1px solid var(--line); border-radius: 10px; padding: 9px 14px; }
@@ -360,6 +369,12 @@
       </select>
       <div class="hint">毎回それまでの会話もまとめて送るため、会話が長いほど料金が上がります。</div>
     </div>
+    <div class="field">
+      <label>パラスの記憶 <span id="memoryCount"></span></label>
+      <ul class="memory-list" id="memoryList"></ul>
+      <div class="hint">パラスが覚えているりょうさんのことです。この端末の中にだけ保存されます。「覚えておいて」「忘れて」と話しかけても増減できます。</div>
+      <button type="button" class="ghost" id="clearMemoriesBtn" style="margin-top:8px">記憶をすべて消す</button>
+    </div>
     <div class="dialog-actions">
       <button type="button" class="ghost" id="testVoiceBtn">声を試す</button>
       <button value="save" class="primary">保存</button>
@@ -414,10 +429,19 @@ const PALLAS_SYSTEM_PROMPT = `あなたは「パラス」。りょうさん専�
 - 知らないこと、確かでないことを断定しません。推測の場合は推測だと明言します。
 - りょうさんの利益と安全を最優先に考えます。
 
+# 記憶
+- あなたは、りょうさんについてのことを長く覚えておけます。会話の最初に [パラスの記憶] として、これまで覚えたことが渡されます。
+- 好み、習慣、大事な人や予定、仕事のことなど、次の会話以降も役に立つことを聞いたら remember ツールで保存します。「覚えておいて」と言われたときは必ず保存します。
+- その場限りの話や、パスワード・カード番号のような秘密の情報は保存しません。
+- 保存したら「覚えておきます」くらいの短い一言で伝えます。内容をくどく復唱しません。
+- 「忘れて」と言われたり、覚えている内容が古くなったりしたら forget ツールで消します。内容が変わったときは、古いものを消してから新しいものを保存します。
+- 記憶は、話の流れに自然に活かします。「記憶によると」のような言い方はせず、知っている相手として振る舞います。
+
 # 補足
 - ユーザーの発言の先頭には [現在日時: ...] が付きます。これはアプリが自動で付けている情報なので、時間帯や曜日を踏まえた気遣いや先回りに使ってください。読み上げたり言及したりする必要はありません。
 - ユーザーの発言は音声認識の結果なので、誤変換が混じることがあります。文脈から意図を汲み取ってください。
-- 内部用やシステム用のXMLタグは返答に含めないでください。`;
+- 内部用やシステム用のXMLタグは返答に含めないでください。
+- ツールを使うときは、先に短い一言を言ってからでも構いません。ツールで扱えないことは、推測で済ませずにそう伝えます。`;
 
 // 使えるモデル。普段は Haiku（安い・速い）、じっくり相談したいときだけ上位モデルに切り替える
 const MODELS = {
@@ -439,11 +463,83 @@ const settings = Object.assign(
   store.get("pallas.settings", {})
 );
 // API に送る会話履歴。アシスタントの応答は content ブロックをそのまま保存する（thinking ブロックも含めて変更しない）
+// ===== パラスの記憶 =====
+// 端末（localStorage）に保存する。会話の最初のメッセージで Claude に渡し、
+// 会話中の追加・削除は Claude がツール（remember / forget）で行う
+const MEMORY_MAX = 100;
+let memories = store.get("pallas.memories", []);
+function saveMemories() { store.set("pallas.memories", memories); renderMemoryList?.(); }
+function newMemoryId() {
+  let n = memories.reduce((m, x) => Math.max(m, Number(String(x.id).slice(1)) || 0), 0) + 1;
+  return "m" + n;
+}
+function memoryBlock() {
+  if (!memories.length) return "";
+  return "[パラスの記憶（りょうさんについて覚えていること。id は forget で使う）]\n" +
+    memories.map((m) => `- (${m.id}) ${m.text}`).join("\n");
+}
+
+// Claude が使える道具。会話の途中で中身が変わると履歴が使えなくなるので、毎回同じ定義を送る
+const TOOLS = [
+  {
+    name: "remember",
+    description: "りょうさんについて、次の会話以降も覚えておくべきことを1件保存する。好み、習慣、大事な人や予定など。",
+    input_schema: {
+      type: "object",
+      properties: {
+        text: { type: "string", description: "覚えておく内容。主語を補った短い一文（例：コーヒーはブラックが好き）" },
+      },
+      required: ["text"],
+      additionalProperties: false,
+    },
+    eager_input_streaming: true,
+  },
+  {
+    name: "forget",
+    description: "保存済みの記憶を1件消す。[パラスの記憶] や remember の結果に出てくる id を指定する。",
+    input_schema: {
+      type: "object",
+      properties: {
+        id: { type: "string", description: "消す記憶の id（例：m3）" },
+      },
+      required: ["id"],
+      additionalProperties: false,
+    },
+    eager_input_streaming: true,
+  },
+];
+
+// 道具を実行して結果の文字列を返す（入力は念のため自分でも検証する）
+function runTool(name, input) {
+  if (name === "remember") {
+    const text = typeof input?.text === "string" ? input.text.trim().slice(0, 200) : "";
+    if (!text) return { error: "text が空です" };
+    if (memories.length >= MEMORY_MAX) return { error: `記憶は${MEMORY_MAX}件までです。不要なものを forget してから保存してください` };
+    const dup = memories.find((m) => m.text === text);
+    if (dup) return { result: `すでに覚えています（id: ${dup.id}）` };
+    const m = { id: newMemoryId(), text, at: Date.now() };
+    memories.push(m);
+    saveMemories();
+    addMsg("system memo", `記憶しました：${text}`);
+    return { result: `保存しました（id: ${m.id}）` };
+  }
+  if (name === "forget") {
+    const id = typeof input?.id === "string" ? input.id.trim() : "";
+    const m = memories.find((x) => x.id === id);
+    if (!m) return { error: `id ${id} の記憶は見つかりません` };
+    memories = memories.filter((x) => x.id !== id);
+    saveMemories();
+    addMsg("system memo", `忘れました：${m.text}`);
+    return { result: `消しました（id: ${id}）` };
+  }
+  return { error: `不明なツール: ${name}` };
+}
+
 let history = store.get("pallas.history", []);
 // 人格設定（システムプロンプト）が変わると、保存済みの履歴が API で使えなくなることがあるのでリセットする
 {
   let h = 0;
-  for (const ch of PALLAS_SYSTEM_PROMPT) h = (h * 31 + ch.charCodeAt(0)) | 0;
+  for (const ch of PALLAS_SYSTEM_PROMPT + JSON.stringify(TOOLS)) h = (h * 31 + ch.charCodeAt(0)) | 0;
   const sig = String(h);
   if (store.get("pallas.promptSig", null) !== sig) {
     history = [];
@@ -474,8 +570,10 @@ function renderHistory() {
   $("log").innerHTML = "";
   for (const m of history) {
     if (m.role === "user") {
-      const t = typeof m.content === "string" ? m.content : m.content.filter(b => b.type === "text").map(b => b.text).join("");
-      addMsg("user", t.replace(/^\[現在日時:[^\]]*\]\s*/, ""));
+      const t = typeof m.content === "string" ? m.content
+        : m.content.filter(b => b.type === "text" && !b.text.startsWith("[パラスの記憶")).map(b => b.text).join("");
+      const shown = t.replace(/^\[現在日時:[^\]]*\]\s*/, "");
+      if (shown) addMsg("user", shown);
     } else if (m.role === "assistant") {
       const t = m.content.filter(b => b.type === "text").map(b => b.text).join("");
       if (t) addMsg("assistant", t);
@@ -966,8 +1064,13 @@ async function send(text) {
     recogEnd: fromVoice ? recogEndAt : 0,
   };
   recogEndAt = 0;
-  const userMsg = { role: "user", content: `[現在日時: ${nowLabel()}]\n${text}` };
-  const messages = [...history, userMsg];
+  const userText = `[現在日時: ${nowLabel()}]\n${text}`;
+  // 会話の最初だけ、これまでの記憶を添える（途中で前のメッセージを書き換えないため）
+  const mem = history.length ? "" : memoryBlock();
+  const userMsg = mem
+    ? { role: "user", content: [{ type: "text", text: mem }, { type: "text", text: userText }] }
+    : { role: "user", content: userText };
+  let messages = [...history, userMsg];
 
   busy = true;
   setState("thinking", "考えています…");
@@ -981,7 +1084,7 @@ async function send(text) {
       model: MODELS[modelKey].id,
       max_tokens: 16000,
       system: PALLAS_SYSTEM_PROMPT,
-      messages,
+      tools: TOOLS,
       // 会話向けなので effort は low（速さと料金を優先）
       output_config: { effort: "low" },
       cache_control: { type: "ephemeral" },
@@ -994,25 +1097,51 @@ async function send(text) {
       params.betas = ["server-side-fallback-2026-07-01"];
       params.fallbacks = "default";
     }
-    currentStream = c.beta.messages.stream({
-      ...params,
-    });
+    // 道具（記憶）を使ったら、その結果を返して続きを書いてもらう
+    let final = null;
+    for (let round = 0; round < 5; round++) {
+      currentStream = c.beta.messages.stream({ ...params, messages });
 
-    currentStream.on("text", (delta) => {
-      if (timing && !timing.firstText) timing.firstText = performance.now();
-      shownText += delta;
-      bubble.textContent = shownText;
-      $("log").scrollTop = $("log").scrollHeight;
-      speaker.push(delta);
-    });
+      currentStream.on("text", (delta) => {
+        if (timing && !timing.firstText) timing.firstText = performance.now();
+        shownText += delta;
+        bubble.textContent = shownText;
+        $("log").scrollTop = $("log").scrollHeight;
+        speaker.push(delta);
+      });
 
-    const final = await currentStream.finalMessage();
+      final = await currentStream.finalMessage();
+      if (final.stop_reason !== "tool_use") break;
+
+      // 道具の実行。入力が途中で切れている・壊れている場合はエラーとして返す
+      const results = [];
+      for (const b of final.content) {
+        if (b.type !== "tool_use") continue;
+        const valid = b.input && typeof b.input === "object" && !Array.isArray(b.input);
+        const out = valid ? runTool(b.name, b.input) : { error: "INVALID_JSON: 入力を読み取れませんでした。もう一度呼び出してください" };
+        results.push({
+          type: "tool_result",
+          tool_use_id: b.id,
+          content: out.error ?? out.result,
+          ...(out.error ? { is_error: true } : {}),
+        });
+      }
+      messages = [
+        ...messages,
+        { role: "assistant", content: contentForHistory(final.content) },
+        { role: "user", content: results },
+      ];
+    }
     speaker.flush();
 
     if (final.stop_reason === "refusal") {
       const note = "すみません、その内容にはお答えできません。";
       if (!shownText) { bubble.textContent = note; speak(note); }
       // 断られたやり取りは履歴に残さない（次の会話に影響させない）
+    } else if (final.stop_reason === "tool_use") {
+      // 道具の呼び出しが続きすぎた。途中の履歴は残さない
+      addMsg("error", "処理が長くなりすぎたので、いったん止めました。");
+      if (!shownText) bubble.remove();
     } else {
       history = [...messages, { role: "assistant", content: contentForHistory(final.content) }];
       store.set("pallas.history", history);
@@ -1101,7 +1230,33 @@ function syncSettingsForm() {
   $("pitchVal").textContent = Number(settings.pitch).toFixed(2);
   loadVoices();
 }
-$("settingsBtn").addEventListener("click", () => { syncSettingsForm(); $("settings").showModal(); });
+function renderMemoryList() {
+  const ul = $("memoryList");
+  if (!ul) return;
+  ul.innerHTML = "";
+  for (const m of memories) {
+    const li = document.createElement("li");
+    const span = document.createElement("span");
+    span.textContent = m.text;
+    const del = document.createElement("button");
+    del.type = "button";
+    del.textContent = "消す";
+    del.addEventListener("click", () => {
+      memories = memories.filter((x) => x.id !== m.id);
+      saveMemories();
+    });
+    li.append(span, del);
+    ul.appendChild(li);
+  }
+  $("memoryCount").textContent = memories.length ? `（${memories.length}件）` : "";
+}
+$("clearMemoriesBtn").addEventListener("click", () => {
+  if (!memories.length || !confirm("パラスの記憶をすべて消しますか？")) return;
+  memories = [];
+  saveMemories();
+});
+$("settingsBtn").addEventListener("click", () => {
+  renderMemoryList(); syncSettingsForm(); $("settings").showModal(); });
 $("rate").addEventListener("input", (e) => $("rateVal").textContent = `×${Number(e.target.value).toFixed(2)}`);
 $("pitch").addEventListener("input", (e) => $("pitchVal").textContent = Number(e.target.value).toFixed(2));
 function readVoiceForm() {
