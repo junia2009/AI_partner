@@ -1016,7 +1016,7 @@ function startListening({ auto = false } = {}) {
       addMsg("system", "声が聞き取れませんでした。もう一度マイクを押して話しかけてください。");
       // 開始はしたのに一度も結果が来ない：その端末・ブラウザの音声認識が動いていない可能性が高い
       if (gotStart && !gotResult && !errorCode && ++silentStarts >= 2) {
-        addMsg("error", "このブラウザでは音声認識が動いていないようです。iPhone・iPad では Safari で開くと動く場合があります。それまでは文字入力を使ってください。");
+        addMsg("error", "この端末・ブラウザでは、標準の音声認識が動いていないようです。いったん文字入力を使ってください。");
         silentStarts = 0;
       }
     }
@@ -1081,13 +1081,22 @@ function startListening({ auto = false } = {}) {
     finish();
   }, 4000);
 
-  try {
-    rec.start();
-  } catch (err) {
-    addMsg("error", `マイクを開始できませんでした（${err?.message ?? err}）。`);
-    cancelled = true;
-    finish();
-  }
+  // iPhone・iPad は、音を鳴らす準備（読み上げや音声再生）が動いていると、マイクが音を拾えないことがある。
+  // 聞き取りの前に音まわりを止め、切り替わるのを少し待ってから開始する（話し終えて返事を流すときに再開する）
+  const audioWasActive = (synth && (synth.speaking || synth.pending)) || (audioCtx && audioCtx.state === "running") || !fishAudio.paused;
+  try { synth?.cancel(); } catch {}
+  try { fishAudio.pause(); } catch {}
+  try { audioCtx?.suspend(); } catch {}
+  setTimeout(() => {
+    if (finished) return;
+    try {
+      rec.start();
+    } catch (err) {
+      addMsg("error", `マイクを開始できませんでした（${err?.message ?? err}）。`);
+      cancelled = true;
+      finish();
+    }
+  }, audioWasActive ? 350 : 0);
 }
 function stopListening() {
   if (recognition && recogActive) recognition.requestStop(true);
