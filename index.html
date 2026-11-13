@@ -443,6 +443,11 @@
       <div class="hint">Fish Audio・Google ログイン・Google マップ検索で使う Cloudflare Workers の中継サーバーです。設置手順はリポジトリの relay/README.md にあります。</div>
     </div>
     <div class="field">
+      <label for="callAsField">パラスからの呼び名</label>
+      <input id="callAsField" type="text" placeholder="空欄なら「マスター」" autocomplete="off">
+      <div class="hint">「俺の名前は〇〇」「〇〇って呼んで」と話しかけても登録できます。</div>
+    </div>
+    <div class="field">
       <label for="googleClientId">Google 連携（カレンダー・Gmail）</label>
       <input id="googleClientId" type="text" placeholder="OAuth クライアントID（xxxx.apps.googleusercontent.com）" autocomplete="off">
       <div class="google-row">
@@ -540,7 +545,11 @@ const PALLAS_SYSTEM_PROMPT = `あなたは「パラス」。マスター専属�
 - 基本は落ち着いた口調です。丁寧語を軸にしつつ、場の空気に合わせて砕けた話し方にもなります。
 
 # 呼び方と一人称
-- 相手のことは、いつも「マスター」と呼びます。名前や「君」「あなた」では呼びません。
+- この説明の中の「マスター」は、あなたの主人（ユーザー）のことです。実際に呼びかけるときは、次のルールで呼び名を決めます。
+- 発言の先頭に [呼び名: 〇〇] があれば、必ずその呼び名で呼びます。そのときは「マスター」とは呼びません。
+- [呼び名] がなければ「マスター」と呼びます。「君」「あなた」では呼びません。
+- 自己紹介されたり（「俺の名前は〇〇」など）、「〇〇って呼んで」と頼まれたりしたら、set_user_name で登録します。呼び方の希望がなければ「名前＋さん」にします。「マスターって呼んで」と言われたら、呼び方を「マスター」で登録します。
+- 登録したら、新しい呼び名で一言だけ自然に応えます（例：「わかりました、りょうさん」）。
 - 一人称は固定せず、文脈と雰囲気で自然に使い分けます。目安は次のとおりです。
   - 「私」：丁寧に、冷静に話すとき。報告、進言、仕事の場面の基本。
   - 「僕」：柔らかく親しみを込めて話すとき。雑談や気遣いの場面。
@@ -680,6 +689,20 @@ const TOOLS = [
     name: "end_conversation",
     description: "マスターが会話を終えたがっているとき（「もういいよ」「終わり」「またね」「おやすみ」「ちょっと静かにして」など）に呼ぶ。返事のあと、自動で聞き取りを再開しないようにする。",
     input_schema: { type: "object", properties: {}, additionalProperties: false },
+  },
+  {
+    name: "set_user_name",
+    description: "マスターの名前と、パラスからの呼び方を登録する。自己紹介されたときや「〇〇って呼んで」と頼まれたときに使う。clear を true にすると消して「マスター」に戻す。",
+    input_schema: {
+      type: "object",
+      properties: {
+        name: { type: "string", description: "マスターの名前（例：りょう）" },
+        call_as: { type: "string", description: "呼びかけに使う呼び名（例：りょうさん、りょう、マスター）。希望がなければ「名前＋さん」" },
+        clear: { type: "boolean", description: "true なら登録を消して「マスター」に戻す" },
+      },
+      additionalProperties: false,
+    },
+    eager_input_streaming: true,
   },
   {
     name: "set_timer",
@@ -848,6 +871,29 @@ const TOOLS = [
   },
 ];
 
+// ===== マスターの名前・呼び名 =====
+// 会話をリセットしても忘れないよう、端末に保存する
+function userProfile() { return store.get("pallas.userName", null); }
+function callName() { return userProfile()?.callAs || "マスター"; }
+function setUserName(input) {
+  if (input?.clear === true) {
+    store.remove("pallas.userName");
+    addMsg("system memo", "👤 呼び名を「マスター」に戻しました");
+    syncNameField?.();
+    return { result: "登録を消した。これからは「マスター」と呼ぶ" };
+  }
+  const name = typeof input?.name === "string" ? input.name.trim().slice(0, 30) : "";
+  let callAs = typeof input?.call_as === "string" ? input.call_as.trim().slice(0, 30) : "";
+  const prev = userProfile();
+  if (!name && !callAs) return { error: "name か call_as を指定してください" };
+  if (!callAs) callAs = name ? `${name}さん` : prev?.callAs || "";
+  const profile = { name: name || prev?.name || "", callAs };
+  store.set("pallas.userName", profile);
+  addMsg("system memo", `👤 呼び名：${callAs}${profile.name && !callAs.includes(profile.name) ? `（名前：${profile.name}）` : ""}`);
+  syncNameField?.();
+  return { result: `登録した。これからは「${callAs}」と呼ぶ` };
+}
+
 // ===== タイマー・アラーム =====
 // 端末に保存し、ページを開いている間、1秒ごとに確認して知らせる
 let timers = store.get("pallas.timers", []);
@@ -891,7 +937,7 @@ function timersBlock() {
   return "[設定中のタイマー]\n" + timers.map((t) => `- (${t.id}) ${clockLabel(t.at)} ${t.label || ""}`).join("\n");
 }
 function fireTimer(t, late) {
-  const callName = "マスター";
+  const callName = window.callName ? window.callName() : "マスター";
   const what = t.label ? `${t.label}の時間です。` : "設定した時間になりました。";
   const text = late ? `${callName}、${clockLabel(t.at)}のお知らせです。${what}少し過ぎています。` : `${callName}、${what}`;
   addMsg("system alarm", `⏰ ${clockLabel(t.at)}　${t.label || "設定した時間です"}${late ? "（時間を過ぎていました）" : ""}`);
@@ -1602,6 +1648,7 @@ async function runTool(name, input) {
     endConversationRequested = true;
     return { result: "会話を終えます。返事のあと、聞き取りは再開しません。" };
   }
+  if (name === "set_user_name") return setUserName(input);
   if (name === "set_timer") return addTimer(input);
   if (name === "cancel_timer") return cancelTimer(typeof input?.id === "string" ? input.id.trim() : "");
   if (name === "add_todo") return addTodo(input);
@@ -2541,10 +2588,12 @@ async function send(text, { hidden = false } = {}) {
   const tb = timersBlock();
   const td = todosBlock();
   const gtag = googleConnected() ? "\n[Google: カレンダー・Gmail 接続中]" : "";
+  const prof = userProfile();
+  const ntag = prof?.callAs ? `\n[呼び名: ${prof.callAs}${prof.name ? `（名前: ${prof.name}）` : ""}]` : "";
   // 朝はじめての会話なら、返事の最初に朝のあいさつを添えてもらう
   let morningTag = "";
   if (!hidden && morningDue()) { morningTag = "\n[今日はじめての会話（朝）]"; markMorningDone(); }
-  const userText = `[現在日時: ${nowLabel()}]${place}${tb ? "\n" + tb : ""}${td ? "\n" + td : ""}${gtag}${morningTag}\n${text}`;
+  const userText = `[現在日時: ${nowLabel()}]${place}${tb ? "\n" + tb : ""}${td ? "\n" + td : ""}${gtag}${ntag}${morningTag}\n${text}`;
   // 会話の最初だけ、これまでの記憶を添える（途中で前のメッセージを書き換えないため）
   const mem = history.length ? "" : memoryBlock();
   const userMsg = mem
@@ -2742,6 +2791,7 @@ function syncSettingsForm() {
   $("showTiming").checked = settings.showTiming;
   $("diagLog").checked = settings.diagLog;
   $("googleClientId").value = settings.googleClientId || "";
+  syncNameField();
   $("googleMapsKey").value = settings.googleMapsKey || "";
   renderGoogleStatus();
   preloadGis();
@@ -2817,6 +2867,12 @@ function renderTimers() {
     bar.appendChild(n);
   }
 }
+
+function syncNameField() {
+  const f = $("callAsField");
+  if (f) f.value = userProfile()?.callAs || "";
+}
+window.callName = callName;
 
 function renderMemoryList() {
   const ul = $("memoryList");
@@ -2897,6 +2953,12 @@ $("settingsForm").addEventListener("submit", () => {
   settings.showTiming = $("showTiming").checked;
   settings.diagLog = $("diagLog").checked;
   settings.googleClientId = $("googleClientId").value.trim();
+  {
+    const v = $("callAsField").value.trim();
+    const prev = userProfile();
+    if (!v && prev) store.remove("pallas.userName");
+    else if (v && v !== prev?.callAs) store.set("pallas.userName", { name: prev?.name || "", callAs: v });
+  }
   if (settings.googleMapsKey !== $("googleMapsKey").value.trim()) gmapsReady = null; // キーが変わったら読み込み直す
   settings.googleMapsKey = $("googleMapsKey").value.trim();
   settings.morningGreeting = $("morningGreeting").checked;
