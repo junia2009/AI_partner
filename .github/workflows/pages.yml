@@ -32,6 +32,14 @@ jobs:
           cp -r icons _site/
           touch _site/.nojekyll
 
+      # knowledge/ の資料から、パラスが調べるための索引を作る（PDF があるときだけ pdftotext を入れる）
+      - name: Build knowledge index
+        run: |
+          if find knowledge -iname '*.pdf' 2>/dev/null | grep -q .; then
+            command -v pdftotext >/dev/null || (sudo apt-get update -q && sudo apt-get install -y -q poppler-utils)
+          fi
+          node tools/build-knowledge.mjs _site/knowledge-index.json
+
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:

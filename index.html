@@ -607,6 +607,12 @@ const PALLAS_SYSTEM_PROMPT = `あなたは「パラス」。マスター専属�
 - 朝の報告では、Google につながっていれば calendar_list_events で今日の予定も確かめて伝えます。
 - お店・予定・メールを調べると、詳しい一覧（地図や時刻、ボタン）が画面のカードに表示されます。声では要点だけを伝え、「詳しくは画面に出しています」と添える程度にします。
 
+# 知識（資料を調べて答える）
+- 専門的な質問や、資料に書かれていそうなこと（パラス自身の使い方も含む）は、答える前に search_knowledge で資料を調べます。
+- 見つかった資料の内容を根拠に答え、「〇〇の資料によると」のように、どの資料に基づくかを一言添えます。資料にないことを資料に書いてあるかのように言いません。
+- 1回で見つからなければ、言葉を言い換えて2〜3回まで調べ直してよいです。それでも見つからなければ、資料にはないことを伝え、一般的な知識で答えてよいか確かめます。
+- どんな資料があるかは knowledge_list で確かめられます。
+
 # 景色（画面の背景）
 - 画面の背景には、電脳空間・夜の街の上空・星空・雲の上（朝焼け・青空・夕焼け）・雨の夜のどれかの景色が映っています。今の景色は発言の先頭の [景色] でわかります。
 - これはあなたの姿を見せるための演出です。マスターが実際にいる場所ではありません。景色を理由に「ここは電脳空間なので近くがわからない」などと言ってはいけません。
@@ -689,6 +695,25 @@ const TOOLS = [
   {
     name: "end_conversation",
     description: "マスターが会話を終えたがっているとき（「もういいよ」「終わり」「またね」「おやすみ」「ちょっと静かにして」など）に呼ぶ。返事のあと、自動で聞き取りを再開しないようにする。",
+    input_schema: { type: "object", properties: {}, additionalProperties: false },
+  },
+  {
+    name: "search_knowledge",
+    description: "マスターが用意した資料（専門知識・マニュアル・パラスの使い方など）を検索し、関係する部分を返す。専門的な質問に答える前に使う。",
+    input_schema: {
+      type: "object",
+      properties: {
+        query: { type: "string", description: "探したい内容。重要な単語を含む短い文や単語の並び（例：タイマー 通知 iPhone）" },
+        max: { type: "number", description: "返す断片の数（1〜8）。省略で5" },
+      },
+      required: ["query"],
+      additionalProperties: false,
+    },
+    eager_input_streaming: true,
+  },
+  {
+    name: "knowledge_list",
+    description: "調べられる資料の一覧（資料名）を返す。",
     input_schema: { type: "object", properties: {}, additionalProperties: false },
   },
   {
@@ -871,6 +896,97 @@ const TOOLS = [
     eager_input_streaming: true,
   },
 ];
+
+// ===== 知識（RAG） =====
+// 公開時に GitHub Actions が knowledge/ の資料から作った索引（knowledge-index.json）を読み、
+// 端末の中で BM25 で検索する（日本語は2文字ずつ、英数字は単語ごとに区切る）
+const KNOWLEDGE_REPO = "https://github.com/junia2009/AI_partner/blob/main/knowledge/";
+let kIndex = null;
+let turnKnowledge = []; // この返事で参照した資料（吹き出しの下に出す）
+function ktokens(str) {
+  const t = String(str || "").normalize("NFKC").toLowerCase();
+  const out = t.match(/[a-z0-9]+/g) || [];
+  for (const seg of t.replace(/[^\u3040-\u30ff\u3400-\u9fff\uf900-\ufaffー々]+/g, " ").split(" ")) {
+    if (!seg) continue;
+    if (seg.length === 1) out.push(seg);
+    for (let i = 0; i < seg.length - 1; i++) out.push(seg.slice(i, i + 2));
+  }
+  return out;
+}
+async function loadKnowledge() {
+  if (kIndex) return kIndex;
+  let data = { docs: [], chunks: [] };
+  try {
+    const res = await fetch("knowledge-index.json", { cache: "no-cache" });
+    if (res.ok) data = await res.json();
+  } catch {}
+  const df = new Map();
+  const tfs = data.chunks.map((c) => {
+    const tf = new Map();
+    // 見出しは本文より少し重く数える
+    for (const tok of ktokens(`${c.heading} ${c.heading} ${c.text}`)) tf.set(tok, (tf.get(tok) || 0) + 1);
+    for (const tok of tf.keys()) df.set(tok, (df.get(tok) || 0) + 1);
+    let len = 0; tf.forEach((v) => { len += v; });
+    return { tf, len };
+  });
+  const avg = tfs.reduce((a, x) => a + x.len, 0) / Math.max(1, tfs.length);
+  kIndex = { ...data, df, tfs, avg };
+  return kIndex;
+}
+async function searchKnowledge(input) {
+  const query = typeof input?.query === "string" ? input.query.trim() : "";
+  if (!query) return { error: "query が空です" };
+  const k = await loadKnowledge();
+  if (!k.chunks.length) return { result: "調べられる資料がまだありません（GitHub の knowledge フォルダに資料を置くと使えるようになる）" };
+  const q = [...new Set(ktokens(query))];
+  const N = k.chunks.length, k1 = 1.4, b = 0.75;
+  const scored = k.tfs.map((x, i) => {
+    let sc = 0;
+    for (const tok of q) {
+      const f = x.tf.get(tok);
+      if (!f) continue;
+      const n = k.df.get(tok) || 0;
+      const idf = Math.log(1 + (N - n + 0.5) / (n + 0.5));
+      // ひらがなだけの2文字（助詞や送り仮名）は関係ない文にも当たりやすいので軽く数える
+      const w = /^[\u3040-\u309f]+$/.test(tok) ? 0.3 : 1;
+      sc += w * idf * (f * (k1 + 1)) / (f + k1 * (1 - b + b * x.len / k.avg));
+    }
+    return { i, sc };
+  }).filter((x) => x.sc > 0).sort((a, b2) => b2.sc - a.sc);
+  const max = Math.min(8, Math.max(1, Math.round(Number(input?.max) || 5)));
+  const top = scored.slice(0, max);
+  if (!top.length) return { result: "資料の中に見つかりませんでした" };
+  for (const t of top) {
+    const c = k.chunks[t.i], d = k.docs[c.doc];
+    if (!turnKnowledge.some((x) => x.path === d.path)) turnKnowledge.push({ path: d.path, title: d.title });
+  }
+  return {
+    result: top.map((t) => {
+      const c = k.chunks[t.i], d = k.docs[c.doc];
+      return `【${d.title}${c.heading && c.heading !== d.title ? ` ／ ${c.heading.replace(d.title + " > ", "")}` : ""}】\n${c.text.slice(0, 900)}`;
+    }).join("\n\n"),
+  };
+}
+async function knowledgeList() {
+  const k = await loadKnowledge();
+  if (!k.docs.length) return { result: "資料はまだありません" };
+  return { result: k.docs.map((d) => `- ${d.title}（${d.path}）`).join("\n") };
+}
+function renderKnowledge(bubble, refs) {
+  if (!refs.length) return;
+  const box = document.createElement("div");
+  box.className = "sources";
+  box.append("📚 参照：");
+  refs.forEach((r, i) => {
+    const a = document.createElement("a");
+    a.href = KNOWLEDGE_REPO + r.path.split("/").map(encodeURIComponent).join("/");
+    a.target = "_blank"; a.rel = "noopener noreferrer";
+    a.textContent = r.title;
+    if (i) box.append(" / ");
+    box.append(a);
+  });
+  bubble.appendChild(box);
+}
 
 // ===== マスターの名前・呼び名 =====
 // 会話をリセットしても忘れないよう、端末に保存する
@@ -1660,6 +1776,8 @@ async function runTool(name, input) {
     return { result: "会話を終えます。返事のあと、聞き取りは再開しません。" };
   }
   if (name === "set_user_name") return setUserName(input);
+  if (name === "search_knowledge") return searchKnowledge(input);
+  if (name === "knowledge_list") return knowledgeList();
   if (name === "set_timer") return addTimer(input);
   if (name === "cancel_timer") return cancelTimer(typeof input?.id === "string" ? input.id.trim() : "");
   if (name === "add_todo") return addTodo(input);
@@ -2618,6 +2736,7 @@ async function send(text, { hidden = false } = {}) {
   const speaker = createSentenceSpeaker();
   let shownText = "";
   turnPlaces = [];
+  turnKnowledge = [];
 
   try {
     const modelKey = MODELS[settings.model] ? settings.model : "haiku";
@@ -2660,6 +2779,7 @@ async function send(text, { hidden = false } = {}) {
         if (b.type !== "tool_use") continue;
         const valid = b.input && typeof b.input === "object" && !Array.isArray(b.input);
         if (valid && /^(calendar|gmail|maps)_/.test(b.name)) setState("thinking", b.name.startsWith("maps") ? "地図で探しています…" : "Google を確認しています…");
+        if (valid && /knowledge/.test(b.name)) setState("thinking", "資料を調べています…");
         const out = valid ? await runTool(b.name, b.input) : { error: "INVALID_JSON: 入力を読み取れませんでした。もう一度呼び出してください" };
         results.push({
           type: "tool_result",
@@ -2692,6 +2812,7 @@ async function send(text, { hidden = false } = {}) {
       else {
         bubble.textContent = dedupeReply(stripParens(shownText)); // （）書きと言い直しを表示から取り除く
         renderPlaces(bubble, turnPlaces);
+        renderKnowledge(bubble, turnKnowledge);
       }
     }
   } catch (err) {
