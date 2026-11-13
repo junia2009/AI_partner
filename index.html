@@ -219,6 +219,7 @@
   .msg.error { align-self: center; color: var(--danger); font-size: 13px; background: transparent; }
   .msg.interim { opacity: .55; }
   .msg.timing { font-size: 11px; letter-spacing: .02em; opacity: .75; }
+  .msg.diag { font-size: 11px; font-family: ui-monospace, Menlo, monospace; opacity: .8; align-self: flex-start; }
 
   /* 入力 */
   footer {
@@ -365,6 +366,9 @@
       <label class="check"><input id="autoListen" type="checkbox"> 話し終えたら自動で聞き取りを再開する（連続会話）</label>
     </div>
     <div class="field">
+      <label class="check"><input id="diagLog" type="checkbox"> マイクの診断ログを表示する（不具合の調査用）</label>
+    </div>
+    <div class="field">
       <label class="check"><input id="showTiming" type="checkbox"> 反応時間を表示する（遅い原因を調べる用）</label>
     </div>
     <div class="field">
@@ -470,7 +474,7 @@ const store = {
   remove(key) { try { localStorage.removeItem(key); } catch {} },
 };
 const settings = Object.assign(
-  { apiKey: "", voiceURI: "", rate: 1.1, pitch: 1.0, autoListen: false, model: "haiku", autoResetMin: 60, showTiming: true,
+  { apiKey: "", voiceURI: "", rate: 1.1, pitch: 1.0, autoListen: false, model: "haiku", autoResetMin: 60, showTiming: true, diagLog: false,
     ttsEngine: "browser", fishRelayUrl: "", fishApiKey: "", fishVoice: "45c5d3723c9c42f598e4776dcfd5f02d", fishVoiceCustom: "" },
   store.get("pallas.settings", {})
 );
@@ -873,6 +877,13 @@ function releaseFishAudio() {
     fishAudio.removeAttribute("src");
     fishAudio.load();
   } catch {}
+  // ロック画面などの「再生中」の情報も消す
+  try {
+    if ("mediaSession" in navigator) {
+      navigator.mediaSession.metadata = null;
+      navigator.mediaSession.playbackState = "none";
+    }
+  } catch {}
 }
 
 async function playNextFish() {
@@ -980,6 +991,17 @@ let recogActive = false;
 let listenAfterTurn = false;
 let silentStarts = 0; // 開始したのに何も返ってこなかった回数（音声認識が動かないブラウザの検出用） // 返事の処理中にマイクが押されたら、処理を止めたあとで聞き取りを始める
 
+// 診断ログ：マイクがどこで止まっているかを、時刻つきでログに出す（設定でオンにしたときだけ）
+function diag(msg) {
+  if (!settings.diagLog) return;
+  addMsg("system diag", msg);
+}
+function audioStateText() {
+  const a = `プレーヤー:${fishAudio.getAttribute("src") ? "音声あり" : "空"}/${fishAudio.paused ? "停止" : "再生中"}`;
+  const t = synth ? `標準の声:${synth.speaking ? "話し中" : "-"}${synth.pending ? "/待ちあり" : ""}` : "";
+  return `${a} ${t}${audioCtx ? ` WebAudio:${audioCtx.state}` : ""}`;
+}
+
 function startListening({ auto = false } = {}) {
   if (!Recognition) {
     addMsg("error", "このブラウザは音声認識に対応していません。Chrome か Safari を使うか、文字で入力してください。");
@@ -998,6 +1020,14 @@ function startListening({ auto = false } = {}) {
 
   const rec = new Recognition();
   recognition = rec;
+  const t0 = performance.now();
+  const d = (m) => diag(`🎙 ${((performance.now() - t0) / 1000).toFixed(1)}s ${m}`);
+  d(`開始します（${audioStateText()}）`);
+  rec.onaudiostart = () => d("マイクの音を取り込み開始");
+  rec.onsoundstart = () => d("音を検出");
+  rec.onspeechstart = () => d("声を検出");
+  rec.onspeechend = () => d("声が終わった");
+  rec.onaudioend = () => d("マイクの取り込み終了");
   rec.lang = "ja-JP";
   rec.interimResults = true;
   rec.continuous = false;
@@ -1017,6 +1047,7 @@ function startListening({ auto = false } = {}) {
   const finish = () => {
     if (finished) return;
     finished = true;
+    d(`終了（結果:${gotResult ? "あり" : "なし"}）`);
     [silenceTimer, startWatch, endWatch, maxTimer, noResultTimer].forEach(clearTimeout);
     recogActive = false;
     listening = false;
@@ -1048,6 +1079,7 @@ function startListening({ auto = false } = {}) {
   rec.requestStop = (userCancel) => { if (userCancel) cancelled = true; requestStop(); };
 
   rec.onstart = () => {
+    d("聞き取りが始まった");
     gotStart = true;
     listening = true;
     clearTimeout(startWatch);
@@ -1058,6 +1090,7 @@ function startListening({ auto = false } = {}) {
     noResultTimer = setTimeout(() => { if (!gotResult) requestStop(); }, 8000);
   };
   rec.onresult = (e) => {
+    if (!gotResult) d("最初の結果が届いた");
     let interim = "";
     for (let i = e.resultIndex; i < e.results.length; i++) {
       const r = e.results[i];
@@ -1077,6 +1110,7 @@ function startListening({ auto = false } = {}) {
   };
   rec.onerror = (e) => {
     errorCode = e.error || "unknown";
+    d(`エラー: ${errorCode}`);
     const msg = {
       "not-allowed": "マイクの使用が許可されていません。ブラウザの設定でマイクを許可してください。",
       "service-not-allowed": "この環境では音声認識が許可されていません。ブラウザの設定を確認してください。",
@@ -1359,6 +1393,7 @@ function syncSettingsForm() {
   $("autoListen").checked = settings.autoListen;
   $("autoReset").value = String(settings.autoResetMin);
   $("showTiming").checked = settings.showTiming;
+  $("diagLog").checked = settings.diagLog;
   $("ttsEngine").value = settings.ttsEngine;
   $("fishVoice").value = FISH_VOICES.some(v => v.id === settings.fishVoice) || settings.fishVoice === "custom" ? settings.fishVoice : FISH_VOICES[0].id;
   $("fishVoiceCustom").value = settings.fishVoiceCustom;
@@ -1443,6 +1478,7 @@ $("settingsForm").addEventListener("submit", () => {
   settings.autoListen = $("autoListen").checked;
   settings.autoResetMin = Number($("autoReset").value);
   settings.showTiming = $("showTiming").checked;
+  settings.diagLog = $("diagLog").checked;
   fishErrorShown = false;
   store.set("pallas.settings", settings);
 });
