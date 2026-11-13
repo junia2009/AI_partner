@@ -131,6 +131,27 @@
   .timer-chip button:hover { color: var(--danger); }
   .timer-chip.notify { cursor: pointer; border-style: dashed; color: var(--muted); padding-right: 10px; }
   .msg.alarm { color: #ffd58a; font-size: 14px; }
+  /* やること・朝の報告 */
+  .todo-bar { position: relative; display: flex; justify-content: center; gap: 6px; margin-top: 6px; z-index: 3; }
+  .todo-bar > button.timer-chip { cursor: pointer; padding-right: 10px; }
+  .todo-bar [hidden] { display: none !important; } /* 部品の display 指定より「隠す」を優先 */
+  .timer-chip.morning { color: #ffd58a; border-color: rgba(255,213,138,.5); animation: blinkDot 2.4s ease-in-out infinite; }
+  .todo-panel {
+    position: absolute; top: calc(100% + 6px); left: 50%; transform: translateX(-50%);
+    width: min(360px, calc(100vw - 32px)); max-height: 50vh; overflow-y: auto;
+    background: rgba(12,17,28,.94); border: 1px solid rgba(124,196,255,.3); border-radius: 14px; padding: 10px 12px;
+    box-shadow: 0 10px 30px rgba(0,0,0,.4); backdrop-filter: blur(8px);
+  }
+  .todo-head { display: flex; justify-content: space-between; align-items: center; font-size: 13px; color: var(--muted); letter-spacing: .1em; margin-bottom: 6px; }
+  .todo-head button { background: transparent; border: none; color: var(--muted); }
+  #todoList { list-style: none; margin: 0; padding: 0; }
+  #todoList li { display: flex; align-items: center; gap: 8px; padding: 7px 2px; border-bottom: 1px solid var(--line); font-size: 14px; }
+  #todoList li:last-child { border-bottom: none; }
+  #todoList li span { flex: 1; min-width: 0; word-break: break-word; }
+  #todoList li small { color: var(--muted); font-size: 11px; white-space: nowrap; }
+  #todoList li small.soon { color: #ffd58a; }
+  #todoList li small.over { color: var(--danger); }
+  #todoList input { width: 18px; height: 18px; accent-color: var(--accent); }
   /* 方眼は電脳空間のときだけ */
   body:not([data-scene="cyber"])::before { display: none; }
 
@@ -306,6 +327,15 @@
 <section class="stage">
   <div class="place" aria-live="polite"><span>現在地</span> <b id="place"></b></div>
   <div class="timer-bar" id="timerBar"></div>
+  <div class="todo-bar">
+    <button type="button" class="timer-chip morning" id="morningChip" hidden>☀ 朝の報告を聞く</button>
+    <button type="button" class="timer-chip" id="todoChip" hidden></button>
+    <div class="todo-panel" id="todoPanel" hidden>
+      <div class="todo-head">やること <button type="button" id="todoClose" aria-label="閉じる">✕</button></div>
+      <ul id="todoList"></ul>
+      <div class="hint">「〇〇を追加して」と話しかけると増やせます。</div>
+    </div>
+  </div>
   <div class="drone" id="drone" title="タップして話しかける">
     <div class="hud r3"></div><div class="hud r1"></div><div class="hud r2"></div>
     <canvas id="pallasCanvas"></canvas>
@@ -384,6 +414,9 @@
     </div>
     <div class="field">
       <label class="check"><input id="autoListen" type="checkbox"> 話し終えたら自動で聞き取りを再開する（連続会話）</label>
+    </div>
+    <div class="field">
+      <label class="check"><input id="morningGreeting" type="checkbox"> 朝（4〜12時）その日はじめて開いたら、パラスが朝の報告をする</label>
     </div>
     <div class="field">
       <label class="check"><input id="diagLog" type="checkbox"> マイクの診断ログを表示する（不具合の調査用）</label>
@@ -477,6 +510,17 @@ const PALLAS_SYSTEM_PROMPT = `あなたは「パラス」。りょうさん専�
 - 「10分後に教えて」「7時に起こして」と頼まれたら set_timer を使います。相対時間は minutes、時刻は time（24時間制）で指定します。
 - 設定したら「7時にお知らせします」のように、いつ知らせるかを短く伝えます。
 - 発言の先頭に [設定中のタイマー] があれば、それが今設定されているタイマーです。取り消しを頼まれたら cancel_timer を使います。
+
+# やること（ToDo）
+- 「〜を追加して」「やることに入れて」と頼まれたら add_todo を使います。期限を言われたら due に日付（YYYY-MM-DD）を入れます。
+- 発言の先頭に [やること] があれば、それが今のリストです。終わった・もう要らないと言われたら complete_todo で消します。
+- 「やること読んで」と言われたら、件数と中身を短く伝えます。多いときは期限が近いものや大事なものから話します。
+- 期限が今日・明日のものは、関係する話題のときに先回りして一言触れます。毎回は言いません。
+
+# 朝のあいさつ
+- [朝のあいさつ] が届いたら、あなたから朝のあいさつをします。りょうさんはまだ何も話していません。
+- [今日はじめての会話（朝）] が付いていたら、返事の最初に短く朝のあいさつを添えてから、話に答えます。
+- 朝の報告は2〜4文にします。今日のやること（特に期限が今日・明日のもの）、設定中のタイマー、記憶から思い当たることを先回りして伝えます。何もなければ、あいさつと一言だけにします。
 
 # 場所
 - あなたとりょうさんは、電脳空間・夜の街の上空・星空・雲の上（朝焼け・青空・夕焼け）・雨の夜のどこかにいます。今いる場所は発言の先頭の [現在地] でわかります。
@@ -602,6 +646,31 @@ const TOOLS = [
     },
     eager_input_streaming: true,
   },
+  {
+    name: "add_todo",
+    description: "やることリストに1件追加する。「〜を追加して」「やることに入れて」と頼まれたときに使う。",
+    input_schema: {
+      type: "object",
+      properties: {
+        text: { type: "string", description: "やることの内容。短い一文（例：牛乳を買う、会議の資料を作る）" },
+        due: { type: "string", description: "期限があれば日付（YYYY-MM-DD）。なければ省く" },
+      },
+      required: ["text"],
+      additionalProperties: false,
+    },
+    eager_input_streaming: true,
+  },
+  {
+    name: "complete_todo",
+    description: "やることリストから1件消す。終わったとき、またはもう不要になったときに使う。[やること] や add_todo の結果に出てくる id を指定する。",
+    input_schema: {
+      type: "object",
+      properties: { id: { type: "string", description: "消すやることの id（例：d3）" } },
+      required: ["id"],
+      additionalProperties: false,
+    },
+    eager_input_streaming: true,
+  },
 ];
 
 // ===== タイマー・アラーム =====
@@ -670,6 +739,70 @@ function checkTimers(startup) {
 }
 setInterval(() => checkTimers(false), 1000);
 
+// ===== やることリスト =====
+let todos = store.get("pallas.todos", []);
+function saveTodos() { store.set("pallas.todos", todos); renderTodos?.(); }
+function dueLabel(due) {
+  if (!due) return "";
+  const [y, m, d] = due.split("-").map(Number);
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const diff = Math.round((new Date(y, m - 1, d) - today) / 86400000);
+  if (diff === 0) return "今日まで";
+  if (diff === 1) return "明日まで";
+  if (diff < 0) return `${-diff}日過ぎ`;
+  return `${m}/${d}まで`;
+}
+function addTodo(input) {
+  const text = typeof input?.text === "string" ? input.text.trim().slice(0, 80) : "";
+  if (!text) return { error: "text が空です" };
+  let due = typeof input?.due === "string" ? input.due.trim() : "";
+  if (due && !/^\d{4}-\d{2}-\d{2}$/.test(due)) return { error: "due は YYYY-MM-DD で指定してください" };
+  if (todos.length >= 50) return { error: "やることは50件までです。終わったものを complete_todo してください" };
+  const dup = todos.find((t) => t.text === text);
+  if (dup) return { result: `すでにあります（id: ${dup.id}）` };
+  const n = todos.reduce((mx, x) => Math.max(mx, Number(String(x.id).slice(1)) || 0), 0) + 1;
+  const t = { id: "d" + n, text, due, at: Date.now() };
+  todos.push(t);
+  saveTodos();
+  addMsg("system memo", `📝 追加：${text}${due ? `（${dueLabel(due)}）` : ""}`);
+  return { result: `追加しました（id: ${t.id}）` };
+}
+function completeTodo(id) {
+  const t = todos.find((x) => x.id === id);
+  if (!t) return { error: `id ${id} のやることは見つかりません` };
+  todos = todos.filter((x) => x.id !== id);
+  saveTodos();
+  addMsg("system memo", `✅ 完了：${t.text}`);
+  return { result: `消しました（id: ${id}）` };
+}
+function todosBlock() {
+  if (!todos.length) return "";
+  return "[やること]\n" + todos.map((t) => `- (${t.id}) ${t.text}${t.due ? `（${dueLabel(t.due)}）` : ""}`).join("\n");
+}
+
+// ===== 朝のあいさつ =====
+// 朝（4〜12時）その日はじめて開いたとき、パラスから朝の報告をする。
+// ブラウザは画面に触れるまで音を出させてくれないので、最初のタップで始める
+function todayKey() { const d = new Date(); return `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`; }
+function morningDue() {
+  const h = new Date().getHours();
+  return settings.morningGreeting !== false && h >= 4 && h < 12 && store.get("pallas.lastMorning", "") !== todayKey();
+}
+function markMorningDone() { store.set("pallas.lastMorning", todayKey()); renderMorningChip?.(); }
+function startMorningGreeting() {
+  if (!morningDue() || busy || recogActive) return;
+  markMorningDone();
+  send("[朝のあいさつ] 今日はじめてパラスを開きました。", { hidden: true });
+}
+
+// 発言の先頭に付けた情報（日時・場所・タイマー・やること・朝のあいさつの合図）を、表示のときに取り除く
+function stripMeta(t) {
+  const lines = String(t).split("\n");
+  let i = 0;
+  while (i < lines.length && (/^\[[^\]]*\]/.test(lines[i]) || /^- \(/.test(lines[i]))) i++;
+  return lines.slice(i).join("\n").trim();
+}
+
 // 場所の移動は、返事を話し終えてから行う
 let pendingTravel = null;
 const PLACE_NAMES = {
@@ -706,6 +839,8 @@ function runTool(name, input) {
   }
   if (name === "set_timer") return addTimer(input);
   if (name === "cancel_timer") return cancelTimer(typeof input?.id === "string" ? input.id.trim() : "");
+  if (name === "add_todo") return addTodo(input);
+  if (name === "complete_todo") return completeTodo(typeof input?.id === "string" ? input.id.trim() : "");
   if (name === "travel_to") {
     const place = input?.place;
     if (!PLACE_NAMES[place]) return { error: "place が不正です" };
@@ -754,7 +889,7 @@ function renderHistory() {
     if (m.role === "user") {
       const t = typeof m.content === "string" ? m.content
         : m.content.filter(b => b.type === "text" && !b.text.startsWith("[パラスの記憶")).map(b => b.text).join("");
-      const shown = t.replace(/^\[現在日時:[^\]]*\](\[現在地:[^\]]*\])?\s*(\[設定中のタイマー\]\n(- .*\n)*)?/, "").trim();
+      const shown = stripMeta(t);
       if (shown) addMsg("user", shown);
     } else if (m.role === "assistant") {
       const t = dedupeReply(stripParens(m.content.filter(b => b.type === "text").map(b => b.text).join("")));
@@ -1610,7 +1745,7 @@ function contentForHistory(content) {
   return content.filter((b, i) => i >= lastFallback || b.type === "text" || b.type === "fallback");
 }
 
-async function send(text) {
+async function send(text, { hidden = false } = {}) {
   const c = getClient();
   if (!c) {
     addMsg("error", "APIキーが未設定です。右上の「設定」から入力してください。");
@@ -1626,7 +1761,7 @@ async function send(text) {
     addMsg("system", "前回から時間が空いたので、新しい会話を始めました");
   }
   store.set("pallas.lastActivity", Date.now());
-  addMsg("user", text);
+  if (!hidden) addMsg("user", text);
   // 褒められたり感謝されたりしたら、返事のあとに誇らしげに宙返りする
   proudPending = /ありがと|すごい|凄い|さすが|流石|助かっ|えらい|偉い|最高|天才|ナイス|よくやった|いいね|完璧/.test(text);
   // 音声入力の直後なら、話し終わりの判定にかかった時間も記録する
@@ -1639,7 +1774,11 @@ async function send(text) {
   recogEndAt = 0;
   const place = window.__pallasSceneId ? `[現在地: ${PLACE_NAMES[window.__pallasSceneId] || window.__pallasSceneId}]` : "";
   const tb = timersBlock();
-  const userText = `[現在日時: ${nowLabel()}]${place}${tb ? "\n" + tb : ""}\n${text}`;
+  const td = todosBlock();
+  // 朝はじめての会話なら、返事の最初に朝のあいさつを添えてもらう
+  let morningTag = "";
+  if (!hidden && morningDue()) { morningTag = "\n[今日はじめての会話（朝）]"; markMorningDone(); }
+  const userText = `[現在日時: ${nowLabel()}]${place}${tb ? "\n" + tb : ""}${td ? "\n" + td : ""}${morningTag}\n${text}`;
   // 会話の最初だけ、これまでの記憶を添える（途中で前のメッセージを書き換えないため）
   const mem = history.length ? "" : memoryBlock();
   const userMsg = mem
@@ -1797,7 +1936,17 @@ $("composer").addEventListener("submit", (e) => {
   send(t);
 });
 $("stopBtn").addEventListener("click", () => { listenAfterTurn = false; stopAll(); });
-$("drone").addEventListener("click", () => $("micBtn").click());
+// 朝の報告がまだなら、パラスをタップすると朝の報告。それ以外はマイク
+$("drone").addEventListener("click", () => { if (morningDue()) startMorningGreeting(); else $("micBtn").click(); });
+$("morningChip").addEventListener("click", startMorningGreeting);
+$("todoChip").addEventListener("click", () => { $("todoPanel").hidden = !$("todoPanel").hidden; });
+$("todoClose").addEventListener("click", () => { $("todoPanel").hidden = true; });
+// 朝、操作部品以外の場所をはじめてタップしたら朝の報告を始める
+window.addEventListener("pointerdown", (e) => {
+  if (!morningDue()) return;
+  if (e.target.closest("button, input, select, textarea, dialog, a, label, .todo-panel, #drone, header, footer")) return;
+  setTimeout(startMorningGreeting, 50);
+});
 $("newChatBtn").addEventListener("click", () => {
   if (!confirm("会話をリセットしますか？")) return;
   stopAll();
@@ -1815,6 +1964,7 @@ function syncSettingsForm() {
   $("autoReset").value = String(settings.autoResetMin);
   $("showTiming").checked = settings.showTiming;
   $("diagLog").checked = settings.diagLog;
+  $("morningGreeting").checked = settings.morningGreeting !== false;
   $("ttsEngine").value = settings.ttsEngine;
   $("asrEngine").value = settings.asrEngine || "auto";
   $("fishVoice").value = FISH_VOICES.some(v => v.id === settings.fishVoice) || settings.fishVoice === "custom" ? settings.fishVoice : FISH_VOICES[0].id;
@@ -1826,6 +1976,36 @@ function syncSettingsForm() {
   $("pitchVal").textContent = Number(settings.pitch).toFixed(2);
   loadVoices();
 }
+function renderTodos() {
+  const chip = $("todoChip"), list = $("todoList"), panel = $("todoPanel");
+  if (!chip) return;
+  chip.hidden = !todos.length;
+  chip.textContent = `📝 やること ${todos.length}`;
+  if (!todos.length) panel.hidden = true;
+  list.innerHTML = "";
+  for (const t of todos) {
+    const li = document.createElement("li");
+    const cb = document.createElement("input");
+    cb.type = "checkbox"; cb.title = "終わった";
+    cb.addEventListener("change", () => completeTodo(t.id));
+    const span = document.createElement("span");
+    span.textContent = t.text;
+    li.append(cb, span);
+    if (t.due) {
+      const sm = document.createElement("small");
+      const lab = dueLabel(t.due);
+      sm.textContent = lab;
+      sm.className = lab.includes("過ぎ") ? "over" : (lab === "今日まで" || lab === "明日まで") ? "soon" : "";
+      li.appendChild(sm);
+    }
+    list.appendChild(li);
+  }
+}
+function renderMorningChip() {
+  const el = $("morningChip");
+  if (el) el.hidden = !morningDue();
+}
+
 function renderTimers() {
   const bar = $("timerBar");
   if (!bar) return;
@@ -1935,6 +2115,8 @@ $("settingsForm").addEventListener("submit", () => {
   settings.autoResetMin = Number($("autoReset").value);
   settings.showTiming = $("showTiming").checked;
   settings.diagLog = $("diagLog").checked;
+  settings.morningGreeting = $("morningGreeting").checked;
+  renderMorningChip();
   fishErrorShown = false;
   store.set("pallas.settings", settings);
 });
@@ -1983,6 +2165,9 @@ setTimeout(() => {
 }, 3000);
 renderHistory();
 renderTimers();
+renderTodos();
+renderMorningChip();
+setInterval(renderMorningChip, 60000);
 setTimeout(() => checkTimers(true), 1500);
 // レイアウト確定後（3D表示の読み込みで高さが変わる）にも最新の発言まで送る
 const scrollLogToEnd = () => { $("log").scrollTop = $("log").scrollHeight; };
