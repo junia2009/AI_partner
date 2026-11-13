@@ -31,7 +31,10 @@
   html, body { height: 100%; }
   body {
     margin: 0;
-    background: radial-gradient(1200px 600px at 50% -10%, #17213a 0%, var(--bg) 60%);
+    background:
+      radial-gradient(900px 600px at 50% 22%, rgba(40,90,170,.28) 0%, rgba(11,15,23,0) 70%),
+      radial-gradient(1400px 900px at 50% 120%, rgba(90,60,200,.16) 0%, rgba(11,15,23,0) 60%),
+      var(--bg);
     color: var(--text);
     font-family: "Hiragino Sans", "Noto Sans JP", "Yu Gothic UI", system-ui, sans-serif;
     display: flex;
@@ -40,16 +43,44 @@
   }
   button { font: inherit; color: inherit; cursor: pointer; }
 
+  /* AIらしい背景：粒子ネットワーク（canvas）＋グリッド＋走査線 */
+  #bg { position: fixed; inset: 0; width: 100%; height: 100%; z-index: 0; pointer-events: none; }
+  body::before {
+    content: ""; position: fixed; inset: 0; z-index: 0; pointer-events: none;
+    background-image:
+      linear-gradient(rgba(124,196,255,.07) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(124,196,255,.07) 1px, transparent 1px);
+    background-size: 44px 44px;
+    background-position: center top;
+    -webkit-mask-image: radial-gradient(ellipse 70% 60% at 50% 30%, #000 0%, transparent 80%);
+            mask-image: radial-gradient(ellipse 70% 60% at 50% 30%, #000 0%, transparent 80%);
+    animation: gridDrift 18s linear infinite;
+  }
+  body::after {
+    content: ""; position: fixed; inset: 0; z-index: 0; pointer-events: none;
+    background:
+      repeating-linear-gradient(0deg, rgba(255,255,255,.018) 0 1px, transparent 1px 3px),
+      radial-gradient(ellipse at center, transparent 55%, rgba(0,0,0,.55) 100%);
+  }
+  @keyframes gridDrift { to { background-position: center 44px; } }
+  header, .stage, main, footer { position: relative; z-index: 1; }
+
   header {
     display: flex; align-items: center; justify-content: space-between;
     padding: 12px 16px;
     padding-top: max(12px, env(safe-area-inset-top));
   }
-  .brand { font-weight: 600; letter-spacing: .12em; font-size: 15px; }
-  .brand span { color: var(--accent); }
+  .brand { font-weight: 600; letter-spacing: .18em; font-size: 15px; display: flex; align-items: center; gap: 8px; }
+  .brand span { color: var(--accent); text-shadow: 0 0 12px rgba(124,196,255,.6); }
+  .brand::before {
+    content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--accent);
+    box-shadow: 0 0 8px var(--accent); animation: blinkDot 2.4s ease-in-out infinite;
+  }
+  body[data-state="thinking"] .brand::before { background: var(--accent-2); box-shadow: 0 0 8px var(--accent-2); animation-duration: .6s; }
+  @keyframes blinkDot { 50% { opacity: .3; } }
   .head-actions { display: flex; gap: 6px; }
   .icon-btn {
-    background: transparent; border: 1px solid var(--line); border-radius: 10px;
+    background: rgba(18,24,38,.5); backdrop-filter: blur(6px); border: 1px solid var(--line); border-radius: 10px;
     padding: 6px 10px; font-size: 13px; color: var(--muted);
   }
   .icon-btn:hover { color: var(--text); border-color: var(--muted); }
@@ -57,17 +88,48 @@
   /* 3Dモデル（パラス本体） */
   .stage { display: flex; flex-direction: column; align-items: center; padding: 0 16px 4px; }
   .drone {
-    position: relative; width: 100%; max-width: 520px;
-    height: clamp(200px, 36vh, 380px);
+    position: relative; width: 100%; max-width: 720px;
+    height: clamp(280px, 52vh, 600px);
     display: none; cursor: pointer;
+    --hud: 124,196,255;
   }
+  body[data-state="thinking"] .drone { --hud: 180,140,255; }
   .drone::before {
-    content: ""; position: absolute; inset: 15% 25%; border-radius: 50%;
-    background: radial-gradient(circle, rgba(124,196,255,.22) 0%, rgba(124,196,255,0) 70%);
-    filter: blur(10px); transition: background .6s ease;
+    content: ""; position: absolute; left: 50%; top: 50%; width: 60%; aspect-ratio: 1; transform: translate(-50%, -50%);
+    border-radius: 50%;
+    background: radial-gradient(circle, rgba(var(--hud),.28) 0%, rgba(var(--hud),0) 68%);
+    filter: blur(12px); transition: background .6s ease;
   }
-  body[data-state="thinking"] .drone::before { background: radial-gradient(circle, rgba(180,140,255,.25) 0%, rgba(180,140,255,0) 70%); }
-  .drone canvas { position: relative; width: 100%; height: 100%; display: block; }
+  .drone canvas { position: relative; width: 100%; height: 100%; display: block; z-index: 1; }
+  /* HUDリング */
+  .hud { position: absolute; left: 50%; top: 50%; border-radius: 50%; pointer-events: none; transform: translate(-50%, -50%); }
+  .hud.r1 {
+    height: 80%; aspect-ratio: 1;
+    border: 1px solid rgba(var(--hud),.18);
+    background: conic-gradient(from 0deg, rgba(var(--hud),.55) 0deg 2deg, transparent 2deg 30deg) ;
+    -webkit-mask: radial-gradient(circle, transparent calc(50% - 7px), #000 calc(50% - 6px), #000 calc(50% - 1px), transparent 50%);
+            mask: radial-gradient(circle, transparent calc(50% - 7px), #000 calc(50% - 6px), #000 calc(50% - 1px), transparent 50%);
+    animation: hudSpin 40s linear infinite;
+  }
+  .hud.r2 {
+    height: 64%; aspect-ratio: 1;
+    border: 1px dashed rgba(var(--hud),.25);
+    animation: hudSpin 26s linear infinite reverse;
+  }
+  .hud.r3 {
+    height: 94%; aspect-ratio: 1;
+    border: 2px solid transparent;
+    border-top-color: rgba(var(--hud),.5); border-bottom-color: rgba(var(--hud),.2);
+    animation: hudSpin 12s linear infinite;
+  }
+  body[data-state="listening"] .hud.r3 { animation-duration: 4s; border-top-color: rgba(var(--hud),.85); }
+  body[data-state="thinking"] .hud.r1 { animation-duration: 6s; }
+  body[data-state="thinking"] .hud.r2 { animation-duration: 4s; }
+  body[data-state="thinking"] .hud.r3 { animation-duration: 1.6s; }
+  body[data-state="speaking"] .hud.r2 { animation: hudSpin 26s linear infinite reverse, hudPulse .5s ease-in-out infinite alternate; }
+  @keyframes hudSpin { to { transform: translate(-50%, -50%) rotate(360deg); } }
+  @keyframes hudPulse { to { border-color: rgba(var(--hud),.6); } }
+  @media (prefers-reduced-motion: reduce) { .hud, body::before { animation: none !important; } }
   body.has-3d .drone { display: block; }
   body.has-3d .orb-wrap { display: none; }
 
@@ -96,17 +158,24 @@
   @keyframes ripple { from { transform: scale(.95); opacity: 1; } to { transform: scale(1.25); opacity: 0; } }
   @keyframes spin { 50% { transform: scale(.94) rotate(180deg); } to { transform: rotate(360deg); } }
   @keyframes talk { from { transform: scale(1); } to { transform: scale(1.08); } }
-  .status { margin-top: 12px; font-size: 13px; color: var(--muted); min-height: 1.4em; text-align: center; }
+  .status {
+    margin-top: -8px; font-size: 12px; letter-spacing: .14em; color: var(--accent);
+    min-height: 1.4em; text-align: center; text-shadow: 0 0 10px rgba(124,196,255,.5);
+  }
+  .status::before { content: "◆ "; opacity: .7; }
+  body[data-state="thinking"] .status { color: var(--accent-2); text-shadow: 0 0 10px rgba(180,140,255,.5); }
 
   /* ログ */
   main {
     flex: 1; overflow-y: auto; padding: 8px 16px 16px;
     display: flex; flex-direction: column; gap: 10px;
     width: 100%; max-width: 760px; margin: 0 auto;
+    -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 24px);
+            mask-image: linear-gradient(to bottom, transparent 0, #000 24px);
   }
   .msg { max-width: 85%; padding: 10px 14px; border-radius: var(--radius); line-height: 1.7; white-space: pre-wrap; word-break: break-word; }
-  .msg.user { align-self: flex-end; background: var(--user); border-bottom-right-radius: 4px; }
-  .msg.assistant { align-self: flex-start; background: var(--panel); border: 1px solid var(--line); border-bottom-left-radius: 4px; }
+  .msg.user { align-self: flex-end; background: rgba(29,42,68,.8); backdrop-filter: blur(6px); border-bottom-right-radius: 4px; }
+  .msg.assistant { align-self: flex-start; background: rgba(18,24,38,.72); backdrop-filter: blur(6px); border: 1px solid rgba(124,196,255,.22); box-shadow: 0 0 18px rgba(124,196,255,.06); border-bottom-left-radius: 4px; }
   .msg.system { align-self: center; color: var(--muted); font-size: 12px; background: transparent; padding: 2px; }
   .msg.error { align-self: center; color: var(--danger); font-size: 13px; background: transparent; }
   .msg.interim { opacity: .55; }
@@ -161,6 +230,7 @@
 </style>
 </head>
 <body data-state="idle">
+<canvas id="bg" aria-hidden="true"></canvas>
 
 <header>
   <div class="brand">AI <span>PALLAS</span></div>
@@ -171,7 +241,10 @@
 </header>
 
 <section class="stage">
-  <div class="drone" id="drone" title="タップして話しかける"><canvas id="pallasCanvas"></canvas></div>
+  <div class="drone" id="drone" title="タップして話しかける">
+    <div class="hud r3"></div><div class="hud r1"></div><div class="hud r2"></div>
+    <canvas id="pallasCanvas"></canvas>
+  </div>
   <div class="orb-wrap"><div class="ring"></div><div class="orb"></div></div>
   <div class="status" id="status">マイクを押して話しかけてください</div>
 </section>
@@ -641,6 +714,101 @@ if (!Recognition) {
 }
 </script>
 
+<!-- ===== 背景（粒子ネットワーク） ===== -->
+<script>
+(() => {
+  const canvas = document.getElementById("bg");
+  const ctx = canvas.getContext("2d");
+  const reduceMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
+  const COLORS = {
+    idle: [124, 196, 255], listening: [124, 220, 255], thinking: [180, 140, 255], speaking: [124, 196, 255],
+  };
+  let w = 0, h = 0, dpr = 1, nodes = [], pulses = [];
+  let col = [...COLORS.idle];
+  let lastPulse = 0;
+
+  function resize() {
+    dpr = Math.min(window.devicePixelRatio || 1, 2);
+    w = window.innerWidth; h = window.innerHeight;
+    canvas.width = w * dpr; canvas.height = h * dpr;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    const count = Math.min(140, Math.max(45, Math.round((w * h) / 8000)));
+    nodes = Array.from({ length: count }, () => ({
+      x: Math.random() * w, y: Math.random() * h,
+      vx: (Math.random() - 0.5) * 0.25, vy: (Math.random() - 0.5) * 0.25,
+      r: Math.random() * 1.6 + 0.8, phase: Math.random() * Math.PI * 2,
+    }));
+  }
+  window.addEventListener("resize", resize);
+  resize();
+
+  // 話している間は、パラスの位置から波紋を広げる
+  function center() {
+    const d = document.getElementById("drone");
+    const r = (d && d.offsetParent ? d : document.querySelector(".orb-wrap")).getBoundingClientRect();
+    return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+  }
+  window.addEventListener("pallas:boundary", () => {
+    const now = performance.now();
+    if (now - lastPulse > 350) { pulses.push({ ...center(), t: 0 }); lastPulse = now; }
+  });
+
+  let prev = performance.now();
+  function frame(now) {
+    const dt = Math.min((now - prev) / 16.67, 3); prev = now;
+    const state = document.body.dataset.state || "idle";
+    const target = COLORS[state] || COLORS.idle;
+    for (let i = 0; i < 3; i++) col[i] += (target[i] - col[i]) * 0.05;
+    const [r, g, b] = col.map(Math.round);
+    const speed = (state === "thinking" ? 3 : state === "listening" ? 1.6 : 1) * (reduceMotion ? 0 : 1);
+    const linkDist = Math.min(150, Math.max(90, w / 9));
+
+    ctx.clearRect(0, 0, w, h);
+
+    // 粒子の移動
+    for (const n of nodes) {
+      n.x += n.vx * speed * dt; n.y += n.vy * speed * dt;
+      if (n.x < -20) n.x = w + 20; else if (n.x > w + 20) n.x = -20;
+      if (n.y < -20) n.y = h + 20; else if (n.y > h + 20) n.y = -20;
+    }
+    // 粒子どうしをつなぐ線
+    ctx.lineWidth = 1;
+    for (let i = 0; i < nodes.length; i++) {
+      const a = nodes[i];
+      for (let j = i + 1; j < nodes.length; j++) {
+        const c = nodes[j];
+        const dx = a.x - c.x, dy = a.y - c.y;
+        const d2 = dx * dx + dy * dy;
+        if (d2 < linkDist * linkDist) {
+          const alpha = (1 - Math.sqrt(d2) / linkDist) * 0.32;
+          ctx.strokeStyle = `rgba(${r},${g},${b},${alpha})`;
+          ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(c.x, c.y); ctx.stroke();
+        }
+      }
+    }
+    // 粒子（またたく）
+    const t = now / 1000;
+    for (const n of nodes) {
+      const tw = 0.55 + 0.4 * Math.sin(t * (state === "thinking" ? 5 : 1.5) + n.phase);
+      ctx.fillStyle = `rgba(${r},${g},${b},${tw})`;
+      ctx.beginPath(); ctx.arc(n.x, n.y, n.r, 0, Math.PI * 2); ctx.fill();
+    }
+    // 発話の波紋
+    if (state === "speaking" && now - lastPulse > 900) { pulses.push({ ...center(), t: 0 }); lastPulse = now; }
+    pulses = pulses.filter((p) => p.t < 1);
+    for (const p of pulses) {
+      p.t += 0.012 * dt;
+      const rad = 60 + p.t * Math.max(w, h) * 0.45;
+      ctx.strokeStyle = `rgba(${r},${g},${b},${(1 - p.t) * 0.35})`;
+      ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.arc(p.x, p.y, rad, 0, Math.PI * 2); ctx.stroke();
+    }
+    requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+})();
+</script>
+
 <!-- ===== パラス本体（3Dモデル） ===== -->
 <script type="module">
 import * as THREE from "three";
@@ -665,7 +833,7 @@ try {
   scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
 
   const camera = new THREE.PerspectiveCamera(30, 1, 0.1, 50);
-  camera.position.set(0, 0.25, 5.4);
+  camera.position.set(0, 0.2, 4.6);
   camera.lookAt(0, 0, 0);
 
   scene.add(new THREE.HemisphereLight(0xbfd9ff, 0x0b0f17, 0.5));
@@ -744,8 +912,9 @@ try {
     if (!w || !h) return;
     renderer.setSize(w, h, false);
     camera.aspect = w / h;
-    // 横幅が狭いときは引いて全体を収める
-    camera.position.z = w / h < 1 ? 5.4 / Math.max(w / h, 0.6) : 5.4;
+    // できるだけ大きく。ただし周回リング（半径約1.5）が左右にはみ出さない距離までは引く
+    const halfFov = THREE.MathUtils.degToRad(camera.fov / 2);
+    camera.position.z = Math.max(4.4, 1.55 / (Math.tan(halfFov) * camera.aspect));
     camera.updateProjectionMatrix();
   }
   new ResizeObserver(resize).observe(box);
