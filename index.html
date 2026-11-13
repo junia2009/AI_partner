@@ -121,6 +121,16 @@
   .place { font-size: 11px; letter-spacing: .22em; color: rgba(230,236,248,.7); text-shadow: 0 1px 6px rgba(0,0,0,.6); margin-bottom: -4px; }
   .place span { opacity: .6; }
   .place b { font-weight: 500; color: var(--accent); }
+  /* 設定中のタイマー */
+  .timer-bar { display: flex; flex-wrap: wrap; justify-content: center; gap: 6px; margin-top: 6px; position: relative; z-index: 2; }
+  .timer-bar:empty { display: none; }
+  .timer-chip { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; padding: 4px 6px 4px 10px; border-radius: 999px;
+    background: rgba(12,17,28,.6); border: 1px solid rgba(124,196,255,.35); color: var(--text); backdrop-filter: blur(4px); }
+  .timer-chip b { color: var(--accent); font-weight: 600; font-variant-numeric: tabular-nums; }
+  .timer-chip button { border: none; background: transparent; color: var(--muted); font-size: 13px; padding: 0 4px; }
+  .timer-chip button:hover { color: var(--danger); }
+  .timer-chip.notify { cursor: pointer; border-style: dashed; color: var(--muted); padding-right: 10px; }
+  .msg.alarm { color: #ffd58a; font-size: 14px; }
   /* 方眼は電脳空間のときだけ */
   body:not([data-scene="cyber"])::before { display: none; }
 
@@ -295,6 +305,7 @@
 <div class="content">
 <section class="stage">
   <div class="place" aria-live="polite"><span>現在地</span> <b id="place"></b></div>
+  <div class="timer-bar" id="timerBar"></div>
   <div class="drone" id="drone" title="タップして話しかける">
     <div class="hud r3"></div><div class="hud r1"></div><div class="hud r2"></div>
     <canvas id="pallasCanvas"></canvas>
@@ -462,6 +473,15 @@ const PALLAS_SYSTEM_PROMPT = `あなたは「パラス」。りょうさん専�
 - りょうさんが会話を終えたがっているとき（「もういいよ」「ありがとう、終わり」「またね」「おやすみ」「ちょっと静かにして」など）は end_conversation ツールを呼び、短いあいさつで締めます。
 - 途中の「ありがとう」だけでは終わりと決めつけません。話の流れから、終える気持ちがはっきりしているときだけ呼びます。
 
+# タイマー・アラーム
+- 「10分後に教えて」「7時に起こして」と頼まれたら set_timer を使います。相対時間は minutes、時刻は time（24時間制）で指定します。
+- 設定したら「7時にお知らせします」のように、いつ知らせるかを短く伝えます。
+- 発言の先頭に [設定中のタイマー] があれば、それが今設定されているタイマーです。取り消しを頼まれたら cancel_timer を使います。
+
+# 場所
+- あなたとりょうさんは、電脳空間・夜の街の上空・星空・雲の上（朝焼け・青空・夕焼け）・雨の夜のどこかにいます。今いる場所は発言の先頭の [現在地] でわかります。
+- 「宇宙に行こう」「雨の場所がいい」「景色を変えて」などと頼まれたら travel_to で移動します。移動は返事のあとに行うので、「行きましょう」くらいの短い一言を添えます。
+
 # 補足
 - ユーザーの発言の先頭には [現在日時: ...] が付きます。これはアプリが自動で付けている情報なので、時間帯や曜日を踏まえた気遣いや先回りに使ってください。読み上げたり言及したりする必要はありません。
 - ユーザーの発言は音声認識の結果なので、誤変換が混じることがあります。文脈から意図を汲み取ってください。
@@ -537,7 +557,122 @@ const TOOLS = [
     description: "りょうさんが会話を終えたがっているとき（「もういいよ」「終わり」「またね」「おやすみ」「ちょっと静かにして」など）に呼ぶ。返事のあと、自動で聞き取りを再開しないようにする。",
     input_schema: { type: "object", properties: {}, additionalProperties: false },
   },
+  {
+    name: "set_timer",
+    description: "タイマーやアラームを設定する。「10分後」のような相対時間は minutes、「7時」「19:30」のような時刻は time（24時間制）で指定する。時間になるとパラスが声と通知で知らせる。",
+    input_schema: {
+      type: "object",
+      properties: {
+        minutes: { type: "number", description: "今から何分後か（30秒なら 0.5）。time と同時には指定しない" },
+        time: { type: "string", description: "知らせる時刻（24時間制の HH:MM。例：07:00、19:30）。過ぎていれば翌日になる" },
+        label: { type: "string", description: "何の時間か（例：パスタ、会議の準備、起床）。読み上げに使う短い言葉" },
+      },
+      additionalProperties: false,
+    },
+    eager_input_streaming: true,
+  },
+  {
+    name: "cancel_timer",
+    description: "設定済みのタイマーを取り消す。[設定中のタイマー] や set_timer の結果に出てくる id を指定する。",
+    input_schema: {
+      type: "object",
+      properties: { id: { type: "string", description: "取り消すタイマーの id（例：t2）" } },
+      required: ["id"],
+      additionalProperties: false,
+    },
+    eager_input_streaming: true,
+  },
+  {
+    name: "travel_to",
+    description: "パラスとりょうさんが今いる場所（背景）を移す。頼まれたときや、景色を変えたいと言われたときに呼ぶ。返事を話し終えてから移動し、移った場所には30分とどまる。",
+    input_schema: {
+      type: "object",
+      properties: {
+        place: {
+          type: "string",
+          enum: ["cyber", "city", "space", "sky:dawn", "sky:day", "sky:sunset", "rain"],
+          description: "cyber=電脳空間、city=夜の街の上空、space=星空・宇宙、sky:dawn=雲の上の朝焼け、sky:day=雲の上の青空、sky:sunset=雲の上の夕焼け、rain=雨の夜",
+        },
+      },
+      required: ["place"],
+      additionalProperties: false,
+    },
+    eager_input_streaming: true,
+  },
 ];
+
+// ===== タイマー・アラーム =====
+// 端末に保存し、ページを開いている間、1秒ごとに確認して知らせる
+let timers = store.get("pallas.timers", []);
+function saveTimers() { store.set("pallas.timers", timers); renderTimers?.(); }
+function clockLabel(ms) {
+  return new Date(ms).toLocaleTimeString("ja-JP", { hour: "2-digit", minute: "2-digit" });
+}
+function addTimer(input) {
+  const now = Date.now();
+  let at = 0;
+  if (typeof input?.minutes === "number" && input.minutes > 0 && input.minutes <= 60 * 24 * 7) {
+    at = now + input.minutes * 60000;
+  } else if (typeof input?.time === "string" && /^\d{1,2}:\d{2}$/.test(input.time.trim())) {
+    const [h, m] = input.time.trim().split(":").map(Number);
+    if (h > 23 || m > 59) return { error: "time は 00:00〜23:59 で指定してください" };
+    const d = new Date(); d.setHours(h, m, 0, 0);
+    if (d.getTime() <= now) d.setDate(d.getDate() + 1);
+    at = d.getTime();
+  } else {
+    return { error: "minutes（0より大きい数）か time（HH:MM）のどちらかを指定してください" };
+  }
+  if (timers.length >= 20) return { error: "タイマーは20件までです。不要なものを cancel_timer してください" };
+  const n = timers.reduce((mx, x) => Math.max(mx, Number(String(x.id).slice(1)) || 0), 0) + 1;
+  const label = typeof input.label === "string" ? input.label.trim().slice(0, 40) : "";
+  const t = { id: "t" + n, at, label };
+  timers.push(t);
+  saveTimers();
+  addMsg("system memo", `⏰ ${clockLabel(at)} に知らせます${label ? `：${label}` : ""}`);
+  return { result: `設定しました（id: ${t.id}、${clockLabel(at)}${at - now < 3600000 ? `、${Math.round((at - now) / 60000 * 10) / 10}分後` : ""}）` };
+}
+function cancelTimer(id) {
+  const t = timers.find((x) => x.id === id);
+  if (!t) return { error: `id ${id} のタイマーは見つかりません` };
+  timers = timers.filter((x) => x.id !== id);
+  saveTimers();
+  addMsg("system memo", `⏰ 取り消しました：${clockLabel(t.at)}${t.label ? ` ${t.label}` : ""}`);
+  return { result: `取り消しました（id: ${id}）` };
+}
+function timersBlock() {
+  if (!timers.length) return "";
+  return "[設定中のタイマー]\n" + timers.map((t) => `- (${t.id}) ${clockLabel(t.at)} ${t.label || ""}`).join("\n");
+}
+function fireTimer(t, late) {
+  const callName = Math.random() < 0.5 ? "りょうさん" : "マスター";
+  const what = t.label ? `${t.label}の時間です。` : "設定した時間になりました。";
+  const text = late ? `${callName}、${clockLabel(t.at)}のお知らせです。${what}少し過ぎています。` : `${callName}、${what}`;
+  addMsg("system alarm", `⏰ ${clockLabel(t.at)}　${t.label || "設定した時間です"}${late ? "（時間を過ぎていました）" : ""}`);
+  window.dispatchEvent(new Event("pallas:alarm"));
+  speak(text);
+  // ほかのアプリを見ているときは通知でも知らせる
+  if ("Notification" in window && Notification.permission === "granted" && document.hidden) {
+    const opts = { body: t.label ? `${t.label}の時間です` : "設定した時間になりました", icon: "icons/icon-192.png", tag: t.id };
+    navigator.serviceWorker?.ready.then((reg) => reg.showNotification("パラス", opts)).catch(() => { try { new Notification("パラス", opts); } catch {} });
+  }
+}
+function checkTimers(startup) {
+  const now = Date.now();
+  const due = timers.filter((t) => t.at <= now);
+  if (!due.length) { renderTimers?.(); return; }
+  timers = timers.filter((t) => t.at > now);
+  saveTimers();
+  // ページを閉じていた間に過ぎたものは「過ぎていました」と伝える
+  due.forEach((t) => fireTimer(t, startup || now - t.at > 60000));
+}
+setInterval(() => checkTimers(false), 1000);
+
+// 場所の移動は、返事を話し終えてから行う
+let pendingTravel = null;
+const PLACE_NAMES = {
+  cyber: "電脳空間", city: "夜の街の上空", space: "星空", "sky:dawn": "雲の上（朝焼け）",
+  "sky:day": "雲の上（青空）", "sky:sunset": "雲の上（夕焼け）", rain: "雨の夜",
+};
 
 // 道具を実行して結果の文字列を返す（入力は念のため自分でも検証する）
 function runTool(name, input) {
@@ -565,6 +700,15 @@ function runTool(name, input) {
   if (name === "end_conversation") {
     endConversationRequested = true;
     return { result: "会話を終えます。返事のあと、聞き取りは再開しません。" };
+  }
+  if (name === "set_timer") return addTimer(input);
+  if (name === "cancel_timer") return cancelTimer(typeof input?.id === "string" ? input.id.trim() : "");
+  if (name === "travel_to") {
+    const place = input?.place;
+    if (!PLACE_NAMES[place]) return { error: "place が不正です" };
+    if (window.__pallasSceneId === place) return { result: `すでに${PLACE_NAMES[place]}にいます` };
+    pendingTravel = place;
+    return { result: `返事のあと、${PLACE_NAMES[place]}へ移動します` };
   }
   return { error: `不明なツール: ${name}` };
 }
@@ -607,7 +751,7 @@ function renderHistory() {
     if (m.role === "user") {
       const t = typeof m.content === "string" ? m.content
         : m.content.filter(b => b.type === "text" && !b.text.startsWith("[パラスの記憶")).map(b => b.text).join("");
-      const shown = t.replace(/^\[現在日時:[^\]]*\]\s*/, "");
+      const shown = t.replace(/^\[現在日時:[^\]]*\](\[現在地:[^\]]*\])?\s*(\[設定中のタイマー\]\n(- .*\n)*)?/, "").trim();
       if (shown) addMsg("user", shown);
     } else if (m.role === "assistant") {
       const t = m.content.filter(b => b.type === "text").map(b => b.text).join("");
@@ -1434,7 +1578,9 @@ async function send(text) {
     recogEnd: fromVoice ? recogEndAt : 0,
   };
   recogEndAt = 0;
-  const userText = `[現在日時: ${nowLabel()}]\n${text}`;
+  const place = window.__pallasSceneId ? `[現在地: ${PLACE_NAMES[window.__pallasSceneId] || window.__pallasSceneId}]` : "";
+  const tb = timersBlock();
+  const userText = `[現在日時: ${nowLabel()}]${place}${tb ? "\n" + tb : ""}\n${text}`;
   // 会話の最初だけ、これまでの記憶を添える（途中で前のメッセージを書き換えないため）
   const mem = history.length ? "" : memoryBlock();
   const userMsg = mem
@@ -1554,6 +1700,11 @@ function afterTurn() {
   showTiming();
   if (proudPending) { proudPending = false; window.dispatchEvent(new Event("pallas:proud")); }
   setState("idle", "マイクを押して話しかけてください");
+  if (pendingTravel) {
+    const p = pendingTravel;
+    pendingTravel = null;
+    setTimeout(() => window.pallasTravelTo?.(p), 300);
+  }
   if (endConversationRequested) {
     endConversationRequested = false;
     if (settings.autoListen) addMsg("system", "会話を終えました。マイクを押すとまた話せます。");
@@ -1614,6 +1765,37 @@ function syncSettingsForm() {
   $("pitchVal").textContent = Number(settings.pitch).toFixed(2);
   loadVoices();
 }
+function renderTimers() {
+  const bar = $("timerBar");
+  if (!bar) return;
+  bar.innerHTML = "";
+  const now = Date.now();
+  for (const t of [...timers].sort((a, b) => a.at - b.at)) {
+    const left = Math.max(0, Math.round((t.at - now) / 1000));
+    const h = Math.floor(left / 3600), m = Math.floor((left % 3600) / 60), sec = left % 60;
+    const remain = h ? `${h}:${String(m).padStart(2, "0")}:${String(sec).padStart(2, "0")}` : `${m}:${String(sec).padStart(2, "0")}`;
+    const chip = document.createElement("span");
+    chip.className = "timer-chip";
+    chip.append(`⏰ ${clockLabel(t.at)}${t.label ? " " + t.label : ""} `);
+    const b = document.createElement("b");
+    b.textContent = `あと ${remain}`;
+    chip.appendChild(b);
+    const x = document.createElement("button");
+    x.type = "button"; x.textContent = "✕"; x.title = "取り消す";
+    x.addEventListener("click", () => cancelTimer(t.id));
+    chip.appendChild(x);
+    bar.appendChild(chip);
+  }
+  // 通知がまだ許可されていなければ、許可を求めるボタンを出す（タップの中でしか頼めないため）
+  if (timers.length && "Notification" in window && Notification.permission === "default") {
+    const n = document.createElement("span");
+    n.className = "timer-chip notify";
+    n.textContent = "🔔 通知をオンにする";
+    n.addEventListener("click", () => Notification.requestPermission().then(renderTimers));
+    bar.appendChild(n);
+  }
+}
+
 function renderMemoryList() {
   const ul = $("memoryList");
   if (!ul) return;
@@ -1739,6 +1921,8 @@ setTimeout(() => {
   else if (!voicesReady && !fishReady()) addMsg("error", "この端末に日本語の読み上げ音声が見つかりません。端末の設定で日本語の音声を追加してください。");
 }, 3000);
 renderHistory();
+renderTimers();
+setTimeout(() => checkTimers(true), 1500);
 // レイアウト確定後（3D表示の読み込みで高さが変わる）にも最新の発言まで送る
 const scrollLogToEnd = () => { $("log").scrollTop = $("log").scrollHeight; };
 requestAnimationFrame(scrollLogToEnd);
@@ -2098,6 +2282,7 @@ if (!Recognition) {
   let current = null, previous = null, fade = 1;
   function announce(s) {
     document.body.dataset.scene = s.id.split(":")[0];
+    window.__pallasSceneId = s.id;
     window.__pallasScene = s.light;
     window.dispatchEvent(new CustomEvent("pallas:scene", { detail: s.light }));
     const el = document.getElementById("place");
@@ -2537,6 +2722,13 @@ try {
   }
   // 褒められたり感謝されたりしたら、誇らしげに宙返り（メインのスクリプトから合図が来る）
   window.addEventListener("pallas:proud", () => setTimeout(startFlip, 300));
+  // タイマーで知らせるときは、手前に来てこちらを向く
+  window.addEventListener("pallas:alarm", () => {
+    const t = clock.elapsedTime;
+    motion.departUntil = 0;
+    motion.target.set(0, 0.05, Math.min(0.4, nearestZ()));
+    motion.nextWaypoint = t + 8;
+  });
   // 場所の移動：奥へ飛び去り、景色が変わったら遠くから戻ってくる
   window.addEventListener("pallas:travel", (e) => {
     const t = clock.elapsedTime;
