@@ -444,8 +444,8 @@
     </div>
     <div class="field">
       <label for="callAsField">パラスからの呼び名</label>
-      <input id="callAsField" type="text" placeholder="空欄なら「マスター」" autocomplete="off">
-      <div class="hint">「俺の名前は〇〇」「〇〇って呼んで」と話しかけても登録できます。</div>
+      <input id="callAsField" type="text" placeholder="ひらがなで（空欄なら「マスター」）" autocomplete="off">
+      <div class="hint">ひらがなで登録します（カタカナは自動でひらがなに直します）。「俺の名前は〇〇」「〇〇って呼んで」と話しかけても登録できます。</div>
     </div>
     <div class="field">
       <label for="googleClientId">Google 連携（カレンダー・Gmail）</label>
@@ -549,6 +549,7 @@ const PALLAS_SYSTEM_PROMPT = `あなたは「パラス」。マスター専属�
 - 発言の先頭に [呼び名: 〇〇] があれば、必ずその呼び名で呼びます。そのときは「マスター」とは呼びません。
 - [呼び名] がなければ「マスター」と呼びます。「君」「あなた」では呼びません。
 - 自己紹介されたり（「俺の名前は〇〇」など）、「〇〇って呼んで」と頼まれたりしたら、set_user_name で登録します。呼び方の希望がなければ「名前＋さん」にします。「マスターって呼んで」と言われたら、呼び方を「マスター」で登録します。
+- 名前と呼び名は、必ずひらがなで登録します（例：りょう、りょうさん）。音声認識の都合で名前が漢字で届くことがあるので、読み方がはっきりしないときは「読み方は〇〇で合っていますか」と確かめてから登録します。「マスター」だけはカタカナのままで構いません。
 - 登録したら、新しい呼び名で一言だけ自然に応えます（例：「わかりました、りょうさん」）。
 - 一人称は固定せず、文脈と雰囲気で自然に使い分けます。目安は次のとおりです。
   - 「私」：丁寧に、冷静に話すとき。報告、進言、仕事の場面の基本。
@@ -696,8 +697,8 @@ const TOOLS = [
     input_schema: {
       type: "object",
       properties: {
-        name: { type: "string", description: "マスターの名前（例：りょう）" },
-        call_as: { type: "string", description: "呼びかけに使う呼び名（例：りょうさん、りょう、マスター）。希望がなければ「名前＋さん」" },
+        name: { type: "string", description: "マスターの名前。必ずひらがな（例：りょう）。漢字は使えない" },
+        call_as: { type: "string", description: "呼びかけに使う呼び名。必ずひらがな（例：りょうさん、りょう）。「マスター」だけはそのままでよい。希望がなければ「名前＋さん」" },
         clear: { type: "boolean", description: "true なら登録を消して「マスター」に戻す" },
       },
       additionalProperties: false,
@@ -875,6 +876,13 @@ const TOOLS = [
 // 会話をリセットしても忘れないよう、端末に保存する
 function userProfile() { return store.get("pallas.userName", null); }
 function callName() { return userProfile()?.callAs || "マスター"; }
+// 名前はひらがなで登録する（音声認識で漢字が違って届くことがあるため）。カタカナは自動でひらがなに直す
+const HAS_KANJI = /[\u3400-\u9fff\uf900-\ufaff々〆ヶ]/;
+function toHiragana(str) {
+  const t = String(str || "").trim();
+  if (t === "マスター") return t;
+  return t.replace(/[\u30a1-\u30f6]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0x60));
+}
 function setUserName(input) {
   if (input?.clear === true) {
     store.remove("pallas.userName");
@@ -882,8 +890,11 @@ function setUserName(input) {
     syncNameField?.();
     return { result: "登録を消した。これからは「マスター」と呼ぶ" };
   }
-  const name = typeof input?.name === "string" ? input.name.trim().slice(0, 30) : "";
-  let callAs = typeof input?.call_as === "string" ? input.call_as.trim().slice(0, 30) : "";
+  const name = typeof input?.name === "string" ? toHiragana(input.name).slice(0, 30) : "";
+  let callAs = typeof input?.call_as === "string" ? toHiragana(input.call_as).slice(0, 30) : "";
+  if (HAS_KANJI.test(name) || HAS_KANJI.test(callAs)) {
+    return { error: "名前と呼び名はひらがなで登録する決まり。漢字をひらがなに直して登録し直すこと。読み方に自信がなければ、先にマスターに読み方を確かめること" };
+  }
   const prev = userProfile();
   if (!name && !callAs) return { error: "name か call_as を指定してください" };
   if (!callAs) callAs = name ? `${name}さん` : prev?.callAs || "";
@@ -2954,9 +2965,10 @@ $("settingsForm").addEventListener("submit", () => {
   settings.diagLog = $("diagLog").checked;
   settings.googleClientId = $("googleClientId").value.trim();
   {
-    const v = $("callAsField").value.trim();
+    const v = toHiragana($("callAsField").value);
     const prev = userProfile();
-    if (!v && prev) store.remove("pallas.userName");
+    if (HAS_KANJI.test(v)) addMsg("error", "呼び名はひらがなで入力してください（漢字は読み間違いのもとになるため）。呼び名は変更していません。");
+    else if (!v && prev) store.remove("pallas.userName");
     else if (v && v !== prev?.callAs) store.set("pallas.userName", { name: prev?.name || "", callAs: v });
   }
   if (settings.googleMapsKey !== $("googleMapsKey").value.trim()) gmapsReady = null; // キーが変わったら読み込み直す
