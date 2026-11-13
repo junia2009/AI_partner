@@ -936,24 +936,79 @@ let recognition = null;
 let listening = false;
 let interimEl = null;
 
+// 音声認識の状態。listening は「マイクが実際に聞いている」、recogActive は「開始してから終わるまで」
+let recogActive = false;
+let listenAfterTurn = false; // 返事の処理中にマイクが押されたら、処理を止めたあとで聞き取りを始める
+
 function startListening() {
   if (!Recognition) {
     addMsg("error", "このブラウザは音声認識に対応していません。Chrome か Safari を使うか、文字で入力してください。");
     return;
   }
-  if (listening || busy) return;
+  if (recogActive) return;
+  if (busy) {
+    // 返事の処理中：止めてから聞き取りを始める（処理の後片付けが終わったら send() の最後で開始）
+    listenAfterTurn = true;
+    currentStream?.abort();
+    stopSpeaking();
+    setState("listening", "マイクを準備しています…");
+    return;
+  }
   stopSpeaking();
-  recognition = new Recognition();
-  recognition.lang = "ja-JP";
-  recognition.interimResults = true;
-  recognition.continuous = false;
+
+  const rec = new Recognition();
+  recognition = rec;
+  rec.lang = "ja-JP";
+  rec.interimResults = true;
+  rec.continuous = false;
+  recogActive = true;
   let finalText = "";
   let latestInterim = "";
-  let silenceTimer = null;
+  let gotStart = false;
+  let finished = false;
+  let errorCode = "";
+  let cancelled = false;
+  let silenceTimer = null, startWatch = null, endWatch = null, maxTimer = null;
   lastSpeechAt = 0;
+  setState("listening", "マイクを準備しています…");
 
-  recognition.onstart = () => { listening = true; setState("listening", "聞いています…"); };
-  recognition.onresult = (e) => {
+  // 聞き取りの終わり。ブラウザから終了の合図（onend）が来なくても、必ずここを1回だけ通す
+  const finish = () => {
+    if (finished) return;
+    finished = true;
+    [silenceTimer, startWatch, endWatch, maxTimer].forEach(clearTimeout);
+    recogActive = false;
+    listening = false;
+    if (recognition === rec) recognition = null;
+    interimEl?.remove();
+    interimEl = null;
+    recogEndAt = performance.now();
+    // 途中で止めた場合、最後の部分が「確定前」のまま残ることがあるので、それも使う
+    const text = (finalText + latestInterim).trim();
+    if (text) { send(text); return; }
+    setState("idle", "マイクを押して話しかけてください");
+    if (!cancelled && (errorCode === "no-speech" || (gotStart && !errorCode))) {
+      addMsg("system", "声が聞き取れませんでした。もう一度マイクを押して話しかけてください。");
+    }
+  };
+  // 止める。終了の合図が来ない端末があるので、少し待っても来なければ強制的に終える
+  const requestStop = () => {
+    clearTimeout(silenceTimer);
+    try { rec.stop(); } catch {}
+    clearTimeout(endWatch);
+    endWatch = setTimeout(() => { try { rec.abort(); } catch {} finish(); }, 1500);
+  };
+  rec.requestStop = (userCancel) => { if (userCancel) cancelled = true; requestStop(); };
+
+  rec.onstart = () => {
+    gotStart = true;
+    listening = true;
+    clearTimeout(startWatch);
+    setState("listening", "聞いています…");
+    // 話し続けても20秒で区切る（終わらないままになるのを防ぐ）
+    maxTimer = setTimeout(requestStop, 20000);
+  };
+  rec.onresult = (e) => {
     let interim = "";
     for (let i = e.resultIndex; i < e.results.length; i++) {
       const r = e.results[i];
@@ -964,34 +1019,45 @@ function startListening() {
     // ブラウザの判断を待たず、一定時間あたらしい言葉が来なければ話し終わったとみなす
     lastSpeechAt = performance.now();
     clearTimeout(silenceTimer);
-    silenceTimer = setTimeout(() => { if (listening) recognition.stop(); }, SILENCE_MS);
+    silenceTimer = setTimeout(requestStop, SILENCE_MS);
     const shown = finalText + interim;
     if (!interimEl) interimEl = addMsg("user interim", shown);
     else interimEl.textContent = shown;
     $("log").scrollTop = $("log").scrollHeight;
   };
-  recognition.onerror = (e) => {
-    if (e.error === "not-allowed" || e.error === "service-not-allowed") {
-      addMsg("error", "マイクの使用が許可されていません。ブラウザの設定でマイクを許可してください。");
-    } else if (e.error !== "no-speech" && e.error !== "aborted") {
-      addMsg("error", `音声認識エラー: ${e.error}`);
-    }
+  rec.onerror = (e) => {
+    errorCode = e.error || "unknown";
+    const msg = {
+      "not-allowed": "マイクの使用が許可されていません。ブラウザの設定でマイクを許可してください。",
+      "service-not-allowed": "この環境では音声認識が許可されていません。ブラウザの設定を確認してください。",
+      "audio-capture": "マイクが使えませんでした。ほかのアプリがマイクを使っていないか確認してください。",
+      "network": "音声認識のサーバーにつながりませんでした（ブラウザの音声認識はネット接続が必要です）。",
+      "language-not-supported": "この端末では日本語の音声認識が使えないようです。",
+    }[errorCode];
+    if (msg) addMsg("error", msg);
+    else if (!["no-speech", "aborted"].includes(errorCode)) addMsg("error", `音声認識エラー: ${errorCode}`);
   };
-  recognition.onend = () => {
-    listening = false;
-    clearTimeout(silenceTimer);
-    interimEl?.remove();
-    interimEl = null;
-    recogEndAt = performance.now();
-    // 途中で止めた場合、最後の部分が「確定前」のまま残ることがあるので、それも使う
-    const text = (finalText + latestInterim).trim();
-    if (text) send(text);
-    else setState("idle", "マイクを押して話しかけてください");
-  };
-  try { recognition.start(); } catch { /* 二重起動は無視 */ }
+  rec.onend = finish;
+
+  // 開始の合図が来ないまま固まるのを防ぐ
+  startWatch = setTimeout(() => {
+    if (gotStart || finished) return;
+    try { rec.abort(); } catch {}
+    addMsg("error", "マイクを開始できませんでした。もう一度押してみてください。");
+    cancelled = true;
+    finish();
+  }, 4000);
+
+  try {
+    rec.start();
+  } catch (err) {
+    addMsg("error", `マイクを開始できませんでした（${err?.message ?? err}）。`);
+    cancelled = true;
+    finish();
+  }
 }
 function stopListening() {
-  if (recognition && listening) recognition.stop();
+  if (recognition && recogActive) recognition.requestStop(true);
 }
 
 // ===== 反応時間の計測 =====
@@ -1166,7 +1232,12 @@ async function send(text) {
   } finally {
     currentStream = null;
     busy = false;
-    if (speakQueue > 0) {
+    if (listenAfterTurn) {
+      // 返事の途中でマイクが押された：そのまま聞き取りへ
+      listenAfterTurn = false;
+      showTiming();
+      startListening();
+    } else if (speakQueue > 0) {
       onSpeakDone = afterTurn;
     } else {
       afterTurn();
@@ -1191,7 +1262,7 @@ function stopAll() {
 $("micBtn").addEventListener("click", () => {
   // iOS Safari は最初のユーザー操作の中で読み上げを有効化しておく必要がある
   if (synth && !synth.speaking) synth.resume();
-  if (listening) stopListening();
+  if (recogActive) stopListening();
   else if (busy || document.body.dataset.state === "speaking") { stopAll(); startListening(); }
   else startListening();
 });
@@ -1202,7 +1273,7 @@ $("composer").addEventListener("submit", (e) => {
   $("textInput").value = "";
   send(t);
 });
-$("stopBtn").addEventListener("click", stopAll);
+$("stopBtn").addEventListener("click", () => { listenAfterTurn = false; stopAll(); });
 $("drone").addEventListener("click", () => $("micBtn").click());
 $("newChatBtn").addEventListener("click", () => {
   if (!confirm("会話をリセットしますか？")) return;
