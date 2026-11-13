@@ -938,7 +938,8 @@ let interimEl = null;
 
 // 音声認識の状態。listening は「マイクが実際に聞いている」、recogActive は「開始してから終わるまで」
 let recogActive = false;
-let listenAfterTurn = false; // 返事の処理中にマイクが押されたら、処理を止めたあとで聞き取りを始める
+let listenAfterTurn = false;
+let silentStarts = 0; // 開始したのに何も返ってこなかった回数（音声認識が動かないブラウザの検出用） // 返事の処理中にマイクが押されたら、処理を止めたあとで聞き取りを始める
 
 function startListening() {
   if (!Recognition) {
@@ -968,7 +969,8 @@ function startListening() {
   let finished = false;
   let errorCode = "";
   let cancelled = false;
-  let silenceTimer = null, startWatch = null, endWatch = null, maxTimer = null;
+  let silenceTimer = null, startWatch = null, endWatch = null, maxTimer = null, noResultTimer = null;
+  let gotResult = false;
   lastSpeechAt = 0;
   setState("listening", "マイクを準備しています…");
 
@@ -976,7 +978,7 @@ function startListening() {
   const finish = () => {
     if (finished) return;
     finished = true;
-    [silenceTimer, startWatch, endWatch, maxTimer].forEach(clearTimeout);
+    [silenceTimer, startWatch, endWatch, maxTimer, noResultTimer].forEach(clearTimeout);
     recogActive = false;
     listening = false;
     if (recognition === rec) recognition = null;
@@ -989,6 +991,11 @@ function startListening() {
     setState("idle", "マイクを押して話しかけてください");
     if (!cancelled && (errorCode === "no-speech" || (gotStart && !errorCode))) {
       addMsg("system", "声が聞き取れませんでした。もう一度マイクを押して話しかけてください。");
+      // 開始はしたのに一度も結果が来ない：その端末・ブラウザの音声認識が動いていない可能性が高い
+      if (gotStart && !gotResult && !errorCode && ++silentStarts >= 2) {
+        addMsg("error", "このブラウザでは音声認識が動いていないようです。iPhone・iPad では Safari で開くと動く場合があります。それまでは文字入力を使ってください。");
+        silentStarts = 0;
+      }
     }
   };
   // 止める。終了の合図が来ない端末があるので、少し待っても来なければ強制的に終える
@@ -1007,6 +1014,8 @@ function startListening() {
     setState("listening", "聞いています…");
     // 話し続けても20秒で区切る（終わらないままになるのを防ぐ）
     maxTimer = setTimeout(requestStop, 20000);
+    // 8秒たっても何も聞き取れなければ区切る（結果を返さないブラウザで待たされ続けないように）
+    noResultTimer = setTimeout(() => { if (!gotResult) requestStop(); }, 8000);
   };
   rec.onresult = (e) => {
     let interim = "";
@@ -1016,6 +1025,7 @@ function startListening() {
       else interim += r[0].transcript;
     }
     latestInterim = interim;
+    if (!gotResult) { gotResult = true; silentStarts = 0; clearTimeout(noResultTimer); }
     // ブラウザの判断を待たず、一定時間あたらしい言葉が来なければ話し終わったとみなす
     lastSpeechAt = performance.now();
     clearTimeout(silenceTimer);
