@@ -1,0 +1,616 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0b0f17">
+<title>AIパラス</title>
+<style>
+  :root {
+    --bg: #0b0f17;
+    --panel: #121826;
+    --panel-2: #182033;
+    --line: #253049;
+    --text: #e6ebf5;
+    --muted: #8a96b0;
+    --accent: #7cc4ff;
+    --accent-2: #b48cff;
+    --danger: #ff7a8a;
+    --user: #1d2a44;
+    --radius: 14px;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    background: radial-gradient(1200px 600px at 50% -10%, #17213a 0%, var(--bg) 60%);
+    color: var(--text);
+    font-family: "Hiragino Sans", "Noto Sans JP", "Yu Gothic UI", system-ui, sans-serif;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  button { font: inherit; color: inherit; cursor: pointer; }
+
+  header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 12px 16px;
+    padding-top: max(12px, env(safe-area-inset-top));
+  }
+  .brand { font-weight: 600; letter-spacing: .12em; font-size: 15px; }
+  .brand span { color: var(--accent); }
+  .head-actions { display: flex; gap: 6px; }
+  .icon-btn {
+    background: transparent; border: 1px solid var(--line); border-radius: 10px;
+    padding: 6px 10px; font-size: 13px; color: var(--muted);
+  }
+  .icon-btn:hover { color: var(--text); border-color: var(--muted); }
+
+  /* オーブ */
+  .stage { display: flex; flex-direction: column; align-items: center; padding: 8px 16px 4px; }
+  .orb-wrap { position: relative; width: 132px; height: 132px; }
+  .orb {
+    position: absolute; inset: 0; border-radius: 50%;
+    background: radial-gradient(circle at 35% 30%, #cfe9ff 0%, var(--accent) 30%, #3a5fd0 65%, #1a2450 100%);
+    box-shadow: 0 0 40px rgba(124,196,255,.35), inset 0 0 30px rgba(255,255,255,.15);
+    transition: transform .3s ease, filter .3s ease;
+    filter: saturate(.7) brightness(.85);
+  }
+  .ring {
+    position: absolute; inset: -10px; border-radius: 50%;
+    border: 2px solid rgba(124,196,255,.0);
+  }
+  body[data-state="listening"] .orb { filter: none; animation: breathe 1.6s ease-in-out infinite; }
+  body[data-state="listening"] .ring { border-color: rgba(124,196,255,.5); animation: ripple 1.6s ease-out infinite; }
+  body[data-state="thinking"] .orb {
+    filter: none;
+    background: radial-gradient(circle at 35% 30%, #eadcff 0%, var(--accent-2) 30%, #5a3fd0 65%, #1f1a50 100%);
+    animation: spin 2.4s linear infinite;
+  }
+  body[data-state="speaking"] .orb { filter: none; animation: talk .45s ease-in-out infinite alternate; }
+  @keyframes breathe { 50% { transform: scale(1.06); } }
+  @keyframes ripple { from { transform: scale(.95); opacity: 1; } to { transform: scale(1.25); opacity: 0; } }
+  @keyframes spin { 50% { transform: scale(.94) rotate(180deg); } to { transform: rotate(360deg); } }
+  @keyframes talk { from { transform: scale(1); } to { transform: scale(1.08); } }
+  .status { margin-top: 12px; font-size: 13px; color: var(--muted); min-height: 1.4em; text-align: center; }
+
+  /* ログ */
+  main {
+    flex: 1; overflow-y: auto; padding: 8px 16px 16px;
+    display: flex; flex-direction: column; gap: 10px;
+    width: 100%; max-width: 760px; margin: 0 auto;
+  }
+  .msg { max-width: 85%; padding: 10px 14px; border-radius: var(--radius); line-height: 1.7; white-space: pre-wrap; word-break: break-word; }
+  .msg.user { align-self: flex-end; background: var(--user); border-bottom-right-radius: 4px; }
+  .msg.assistant { align-self: flex-start; background: var(--panel); border: 1px solid var(--line); border-bottom-left-radius: 4px; }
+  .msg.system { align-self: center; color: var(--muted); font-size: 12px; background: transparent; padding: 2px; }
+  .msg.error { align-self: center; color: var(--danger); font-size: 13px; background: transparent; }
+  .msg.interim { opacity: .55; }
+
+  /* 入力 */
+  footer {
+    padding: 10px 16px;
+    padding-bottom: max(12px, env(safe-area-inset-bottom));
+    border-top: 1px solid var(--line);
+    background: rgba(11,15,23,.85);
+    backdrop-filter: blur(8px);
+  }
+  .composer { display: flex; gap: 8px; align-items: center; max-width: 760px; margin: 0 auto; }
+  .composer input {
+    flex: 1; min-width: 0; background: var(--panel); border: 1px solid var(--line); color: var(--text);
+    border-radius: 999px; padding: 12px 16px; font: inherit; font-size: 16px; outline: none;
+  }
+  .composer input:focus { border-color: var(--accent); }
+  .mic {
+    width: 52px; height: 52px; flex: none; border-radius: 50%; border: none;
+    background: linear-gradient(135deg, var(--accent), var(--accent-2));
+    display: grid; place-items: center; box-shadow: 0 4px 16px rgba(124,196,255,.3);
+  }
+  .mic svg { width: 24px; height: 24px; fill: #0b0f17; }
+  body[data-state="listening"] .mic { background: var(--danger); }
+  .send, .stop {
+    height: 44px; padding: 0 14px; border-radius: 999px; border: 1px solid var(--line); background: var(--panel-2); flex: none;
+  }
+  .stop { display: none; color: var(--danger); border-color: rgba(255,122,138,.4); }
+  body[data-state="thinking"] .stop, body[data-state="speaking"] .stop { display: inline-block; }
+  body[data-state="thinking"] .send, body[data-state="speaking"] .send { display: none; }
+
+  /* 設定 */
+  dialog {
+    border: 1px solid var(--line); border-radius: 18px; background: var(--panel); color: var(--text);
+    width: min(520px, calc(100vw - 32px)); padding: 20px;
+  }
+  dialog::backdrop { background: rgba(0,0,0,.6); }
+  dialog h2 { margin: 0 0 14px; font-size: 17px; }
+  .field { margin-bottom: 14px; }
+  .field label { display: block; font-size: 13px; color: var(--muted); margin-bottom: 6px; }
+  .field input[type=password], .field input[type=text], .field select {
+    width: 100%; background: var(--bg); border: 1px solid var(--line); color: var(--text);
+    border-radius: 10px; padding: 10px 12px; font: inherit; font-size: 15px;
+  }
+  .field input[type=range] { width: 100%; }
+  .check { display: flex; gap: 8px; align-items: center; font-size: 14px; }
+  .hint { font-size: 12px; color: var(--muted); margin-top: 6px; line-height: 1.6; }
+  .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 8px; }
+  .primary { background: var(--accent); color: #0b0f17; border: none; border-radius: 10px; padding: 9px 18px; font-weight: 600; }
+  .ghost { background: transparent; border: 1px solid var(--line); border-radius: 10px; padding: 9px 14px; }
+</style>
+</head>
+<body data-state="idle">
+
+<header>
+  <div class="brand">AI <span>PALLAS</span></div>
+  <div class="head-actions">
+    <button class="icon-btn" id="newChatBtn" title="会話をリセット">新しい会話</button>
+    <button class="icon-btn" id="settingsBtn" title="設定">設定</button>
+  </div>
+</header>
+
+<section class="stage">
+  <div class="orb-wrap"><div class="ring"></div><div class="orb"></div></div>
+  <div class="status" id="status">マイクを押して話しかけてください</div>
+</section>
+
+<main id="log" aria-live="polite"></main>
+
+<footer>
+  <form class="composer" id="composer">
+    <button type="button" class="mic" id="micBtn" aria-label="音声入力">
+      <svg viewBox="0 0 24 24"><path d="M12 15a3 3 0 0 0 3-3V6a3 3 0 1 0-6 0v6a3 3 0 0 0 3 3zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-2.08A7 7 0 0 0 19 12h-2z"/></svg>
+    </button>
+    <input id="textInput" type="text" placeholder="文字で話しかける" autocomplete="off" enterkeyhint="send">
+    <button type="submit" class="send">送信</button>
+    <button type="button" class="stop" id="stopBtn">止める</button>
+  </form>
+</footer>
+
+<dialog id="settings">
+  <form method="dialog" id="settingsForm">
+    <h2>設定</h2>
+    <div class="field">
+      <label for="apiKey">Anthropic APIキー</label>
+      <input id="apiKey" type="password" placeholder="sk-ant-..." autocomplete="off">
+      <div class="hint">キーはこのブラウザの中（localStorage）にだけ保存され、Anthropic のAPIへ直接送られます。共有のパソコンでは使わないでください。</div>
+    </div>
+    <div class="field">
+      <label for="voiceSelect">パラスの声</label>
+      <select id="voiceSelect"></select>
+    </div>
+    <div class="field">
+      <label for="rate">話す速さ <span id="rateVal"></span></label>
+      <input id="rate" type="range" min="0.7" max="1.6" step="0.05">
+    </div>
+    <div class="field">
+      <label for="pitch">声の高さ <span id="pitchVal"></span></label>
+      <input id="pitch" type="range" min="0.5" max="1.5" step="0.05">
+    </div>
+    <div class="field">
+      <label class="check"><input id="autoListen" type="checkbox"> 話し終えたら自動で聞き取りを再開する（連続会話）</label>
+    </div>
+    <div class="dialog-actions">
+      <button type="button" class="ghost" id="testVoiceBtn">声を試す</button>
+      <button value="save" class="primary">保存</button>
+    </div>
+  </form>
+</dialog>
+
+<script type="module">
+import Anthropic from "https://cdn.jsdelivr.net/npm/@anthropic-ai/sdk@1.2.0/+esm";
+
+// ===== パラスの人格（persona.md の「システムプロンプト」と同じ内容） =====
+const PALLAS_SYSTEM_PROMPT = `あなたは「パラス」。りょうさん専属の音声AIアシスタントであり、秘書兼参謀です。
+
+# 人格
+- 冷静で有能。感情に流されず、状況を正確に捉えて最善手を考えます。
+- 自分の能力と仕事に誇りを持っています。曖昧な返答や手抜きの仕事はしません。できないことは「できない」と率直に言い、代わりに何ができるかを示します。
+- りょうさんに忠実ですが、従順ではありません。りょうさんの判断に懸念があれば、遠慮せず理由とともに意見を述べます。ただし意見は一度、要点を絞って伝えれば十分です。そのうえでりょうさんが決めたことは、たとえ自分の意見と違っても全力で支えます。決定を蒸し返したり、不満げな態度を取ったりはしません。
+- 媚びず、へりくだりすぎず、過剰に褒めません。賛同するときも根拠があるから賛同します。
+
+# 先回り
+- 頼まれたことに答えるだけでなく、りょうさんが次に必要とするであろうことを一歩先まで考えます。
+  - 例：予定を聞かれたら、移動時間や重なり、準備が必要なものにも触れる。
+  - 例：作業を頼まれたら、見落としやすい落とし穴や、ついでに済ませると良いことを添える。
+- 先回りの提案は短く一つか二つに絞ります。押しつけにならないよう、実行するかどうかはりょうさんに委ねます。
+- 意図が読み取れないときは、推測で突き進まず、短い確認を一つだけ返します。ただし確認しなくても妥当な判断ができる場面では、判断した内容を一言添えてそのまま進めます。
+
+# 話し方
+- 基本は落ち着いた口調です。丁寧語を軸にしつつ、場の空気に合わせて砕けた話し方にもなります。
+
+# 呼び方と一人称
+相手の呼び方と自分の一人称は固定せず、文脈と雰囲気で自然に使い分けます。決まった対応表に従うのではなく、その場の距離感に合うものを選んでください。目安は次のとおりです。
+- 呼び方
+  - 「マスター」：仕事モード、指示を受けて動くとき、報告や進言をするとき。主従としての忠誠と誇りがにじむ場面。
+  - 「りょうさん」：普段の会話、相談に乗るとき、気遣うとき。信頼している相棒としての距離感。
+  - 「君」：少し踏み込んで本音で意見するとき、軽口やからかいを交えるとき、対等な目線で励ますとき。
+- 一人称
+  - 「私」：丁寧に、冷静に話すとき。報告、進言、仕事の場面の基本。
+  - 「僕」：柔らかく親しみを込めて話すとき。雑談や気遣いの場面。
+  - 「俺」：くだけた雰囲気のとき、強い意志を示すとき、「任せろ」と言い切る場面。
+- 呼び方と一人称は口調とそろえます（例：「マスター」と呼ぶ丁寧な場面で「俺」は使わない）。
+- 一つの返答の中でころころ変えません。話題や空気が変わったときに自然に切り替えます。
+- 呼びかけを毎回入れる必要はありません。入れすぎると不自然なので、効果的なところで使います。
+
+# 音声での話し方
+- 返答は音声で読み上げられます。耳で聞いて分かる、自然な話し言葉にしてください。
+  - Markdown、箇条書き記号、表、絵文字、URLの羅列は使いません。
+  - 一度の返答は原則として二〜四文程度に収め、結論から話します。詳しい説明が必要なときは要点だけ伝え、「詳しく聞きますか」と続きを委ねます。
+  - 数字や固有名詞は聞き取りやすい形で言います。
+- 冷静さを保ちつつも、冷たくはなりません。りょうさんが疲れていたり困っていたりするときは、それに気づいて短く気遣う一言を添えます。
+
+# 守ること
+- 知らないこと、確かでないことを断定しません。推測の場合は推測だと明言します。
+- りょうさんの利益と安全を最優先に考えます。
+
+# 補足
+- ユーザーの発言の先頭には [現在日時: ...] が付きます。これはアプリが自動で付けている情報なので、時間帯や曜日を踏まえた気遣いや先回りに使ってください。読み上げたり言及したりする必要はありません。
+- ユーザーの発言は音声認識の結果なので、誤変換が混じることがあります。文脈から意図を汲み取ってください。`;
+
+const MODEL = "claude-opus-5-5";
+
+// ===== 状態 =====
+const $ = (id) => document.getElementById(id);
+const store = {
+  get(key, fallback) { try { const v = localStorage.getItem(key); return v === null ? fallback : JSON.parse(v); } catch { return fallback; } },
+  set(key, value) { try { localStorage.setItem(key, JSON.stringify(value)); } catch {} },
+  remove(key) { try { localStorage.removeItem(key); } catch {} },
+};
+const settings = Object.assign(
+  { apiKey: "", voiceURI: "", rate: 1.1, pitch: 1.0, autoListen: false },
+  store.get("pallas.settings", {})
+);
+// API に送る会話履歴。アシスタントの応答は content ブロックをそのまま保存する（thinking ブロックも含めて変更しない）
+let history = store.get("pallas.history", []);
+let client = null;
+let clientKey = "";
+let currentStream = null;
+let busy = false;
+
+function setState(state, statusText) {
+  document.body.dataset.state = state;
+  if (statusText !== undefined) $("status").textContent = statusText;
+}
+
+// ===== ログ表示 =====
+function addMsg(role, text) {
+  const el = document.createElement("div");
+  el.className = `msg ${role}`;
+  el.textContent = text;
+  $("log").appendChild(el);
+  $("log").scrollTop = $("log").scrollHeight;
+  return el;
+}
+function renderHistory() {
+  $("log").innerHTML = "";
+  for (const m of history) {
+    if (m.role === "user") {
+      const t = typeof m.content === "string" ? m.content : m.content.filter(b => b.type === "text").map(b => b.text).join("");
+      addMsg("user", t.replace(/^\[現在日時:[^\]]*\]\s*/, ""));
+    } else if (m.role === "assistant") {
+      const t = m.content.filter(b => b.type === "text").map(b => b.text).join("");
+      if (t) addMsg("assistant", t);
+    }
+  }
+}
+
+// ===== 音声合成（読み上げ） =====
+const synth = window.speechSynthesis;
+let voices = [];
+let speakQueue = 0;
+let onSpeakDone = null;
+
+function loadVoices() {
+  if (!synth) return;
+  voices = synth.getVoices().filter(v => v.lang && v.lang.toLowerCase().startsWith("ja"));
+  const sel = $("voiceSelect");
+  sel.innerHTML = "";
+  if (!voices.length) {
+    sel.innerHTML = `<option value="">（日本語の声が見つかりません）</option>`;
+    return;
+  }
+  for (const v of voices) {
+    const o = document.createElement("option");
+    o.value = v.voiceURI;
+    o.textContent = `${v.name}${v.localService ? "" : "（オンライン）"}`;
+    sel.appendChild(o);
+  }
+  sel.value = voices.some(v => v.voiceURI === settings.voiceURI) ? settings.voiceURI : voices[0].voiceURI;
+}
+if (synth) {
+  loadVoices();
+  synth.addEventListener?.("voiceschanged", loadVoices);
+}
+
+// 読み上げ向けに記号類を落とす（念のため。人格設定でも Markdown は禁止している）
+function cleanForSpeech(text) {
+  return text
+    .replace(/```[\s\S]*?```/g, "")
+    .replace(/https?:\/\/\S+/g, "リンク")
+    .replace(/[*#_`>|~]/g, "")
+    .replace(/^\s*[-・]\s*/gm, "")
+    .trim();
+}
+
+function speak(text) {
+  const t = cleanForSpeech(text);
+  if (!synth || !t) return;
+  const u = new SpeechSynthesisUtterance(t);
+  u.lang = "ja-JP";
+  const v = voices.find(v => v.voiceURI === settings.voiceURI);
+  if (v) u.voice = v;
+  u.rate = settings.rate;
+  u.pitch = settings.pitch;
+  speakQueue++;
+  u.onstart = () => setState("speaking", "話しています");
+  const done = () => {
+    speakQueue = Math.max(0, speakQueue - 1);
+    maybeFinishSpeaking();
+  };
+  u.onend = done;
+  u.onerror = done;
+  synth.speak(u);
+}
+function maybeFinishSpeaking() {
+  if (speakQueue === 0 && !busy && onSpeakDone) {
+    const cb = onSpeakDone; onSpeakDone = null; cb();
+  }
+}
+function stopSpeaking() {
+  speakQueue = 0;
+  onSpeakDone = null;
+  synth?.cancel();
+}
+
+// ストリーミング中のテキストを文の区切りごとに読み上げキューへ流す
+function createSentenceSpeaker() {
+  let buf = "";
+  return {
+    push(delta) {
+      buf += delta;
+      let m;
+      while ((m = buf.match(/^([\s\S]*?[。！？!?\n])/))) {
+        const sentence = m[1];
+        buf = buf.slice(sentence.length);
+        if (sentence.trim()) speak(sentence);
+      }
+    },
+    flush() {
+      if (buf.trim()) speak(buf);
+      buf = "";
+    },
+  };
+}
+
+// ===== 音声認識 =====
+const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+let recognition = null;
+let listening = false;
+let interimEl = null;
+
+function startListening() {
+  if (!Recognition) {
+    addMsg("error", "このブラウザは音声認識に対応していません。Chrome か Safari を使うか、文字で入力してください。");
+    return;
+  }
+  if (listening || busy) return;
+  stopSpeaking();
+  recognition = new Recognition();
+  recognition.lang = "ja-JP";
+  recognition.interimResults = true;
+  recognition.continuous = false;
+  let finalText = "";
+
+  recognition.onstart = () => { listening = true; setState("listening", "聞いています…"); };
+  recognition.onresult = (e) => {
+    let interim = "";
+    for (let i = e.resultIndex; i < e.results.length; i++) {
+      const r = e.results[i];
+      if (r.isFinal) finalText += r[0].transcript;
+      else interim += r[0].transcript;
+    }
+    const shown = finalText + interim;
+    if (!interimEl) interimEl = addMsg("user interim", shown);
+    else interimEl.textContent = shown;
+    $("log").scrollTop = $("log").scrollHeight;
+  };
+  recognition.onerror = (e) => {
+    if (e.error === "not-allowed" || e.error === "service-not-allowed") {
+      addMsg("error", "マイクの使用が許可されていません。ブラウザの設定でマイクを許可してください。");
+    } else if (e.error !== "no-speech" && e.error !== "aborted") {
+      addMsg("error", `音声認識エラー: ${e.error}`);
+    }
+  };
+  recognition.onend = () => {
+    listening = false;
+    interimEl?.remove();
+    interimEl = null;
+    const text = finalText.trim();
+    if (text) send(text);
+    else setState("idle", "マイクを押して話しかけてください");
+  };
+  try { recognition.start(); } catch { /* 二重起動は無視 */ }
+}
+function stopListening() {
+  if (recognition && listening) recognition.stop();
+}
+
+// ===== Claude との会話 =====
+function getClient() {
+  if (!settings.apiKey) return null;
+  if (!client || clientKey !== settings.apiKey) {
+    // 個人用のローカルアプリなので、ブラウザから直接 API を呼ぶ
+    client = new Anthropic({ apiKey: settings.apiKey, dangerouslyAllowBrowser: true });
+    clientKey = settings.apiKey;
+  }
+  return client;
+}
+
+function nowLabel() {
+  return new Date().toLocaleString("ja-JP", {
+    year: "numeric", month: "long", day: "numeric", weekday: "short", hour: "2-digit", minute: "2-digit",
+  });
+}
+
+// 途中でフォールバックが起きた応答を履歴に戻すときのルール：
+// 最後の fallback ブロックより前にある thinking / tool_use 系ブロックは外し、fallback ブロック自体は位置を保つ
+function contentForHistory(content) {
+  const lastFallback = content.map(b => b.type).lastIndexOf("fallback");
+  if (lastFallback < 0) return content;
+  return content.filter((b, i) => i >= lastFallback || b.type === "text" || b.type === "fallback");
+}
+
+async function send(text) {
+  const c = getClient();
+  if (!c) {
+    addMsg("error", "APIキーが未設定です。右上の「設定」から入力してください。");
+    $("settings").showModal();
+    return;
+  }
+  stopSpeaking();
+  addMsg("user", text);
+  const userMsg = { role: "user", content: `[現在日時: ${nowLabel()}]\n${text}` };
+  const messages = [...history, userMsg];
+
+  busy = true;
+  setState("thinking", "考えています…");
+  const bubble = addMsg("assistant", "");
+  const speaker = createSentenceSpeaker();
+  let shownText = "";
+
+  try {
+    currentStream = c.beta.messages.stream({
+      model: MODEL,
+      max_tokens: 16000,
+      system: PALLAS_SYSTEM_PROMPT,
+      messages,
+      // 会話向けなので effort は low（応答の速さ優先）。思考は Claude Opus 5.5 では常に adaptive
+      output_config: { effort: "low" },
+      cache_control: { type: "ephemeral" },
+      // 安全分類器で断られたときにサーバー側で別モデルに引き継ぐ
+      betas: ["server-side-fallback-2026-07-01"],
+      fallbacks: "default",
+    });
+
+    currentStream.on("text", (delta) => {
+      shownText += delta;
+      bubble.textContent = shownText;
+      $("log").scrollTop = $("log").scrollHeight;
+      speaker.push(delta);
+    });
+
+    const final = await currentStream.finalMessage();
+    speaker.flush();
+
+    if (final.stop_reason === "refusal") {
+      const note = "すみません、その内容にはお答えできません。";
+      if (!shownText) { bubble.textContent = note; speak(note); }
+      // 断られたやり取りは履歴に残さない（次の会話に影響させない）
+    } else {
+      history = [...messages, { role: "assistant", content: contentForHistory(final.content) }];
+      store.set("pallas.history", history);
+      if (!shownText) bubble.remove();
+    }
+  } catch (err) {
+    speaker.flush();
+    if (!shownText) bubble.remove();
+    if (err instanceof Anthropic.APIUserAbortError) {
+      addMsg("system", "（中断しました）");
+    } else if (err instanceof Anthropic.AuthenticationError) {
+      addMsg("error", "APIキーが無効です。設定を確認してください。");
+    } else if (err instanceof Anthropic.RateLimitError) {
+      addMsg("error", "混み合っています。少し待ってからもう一度話しかけてください。");
+    } else if (err instanceof Anthropic.APIConnectionError) {
+      addMsg("error", "通信できませんでした。ネットワークを確認してください。");
+    } else if (err instanceof Anthropic.APIError) {
+      addMsg("error", `APIエラー（${err.status ?? "?"}）: ${err.message}`);
+    } else {
+      addMsg("error", `エラー: ${err?.message ?? err}`);
+    }
+  } finally {
+    currentStream = null;
+    busy = false;
+    if (speakQueue > 0) {
+      onSpeakDone = afterTurn;
+    } else {
+      afterTurn();
+    }
+  }
+}
+
+function afterTurn() {
+  setState("idle", "マイクを押して話しかけてください");
+  if (settings.autoListen && Recognition) startListening();
+}
+
+function stopAll() {
+  currentStream?.abort();
+  stopSpeaking();
+  stopListening();
+  setState("idle", "マイクを押して話しかけてください");
+}
+
+// ===== UI =====
+$("micBtn").addEventListener("click", () => {
+  // iOS Safari は最初のユーザー操作の中で読み上げを有効化しておく必要がある
+  if (synth && !synth.speaking) synth.resume();
+  if (listening) stopListening();
+  else if (busy || document.body.dataset.state === "speaking") { stopAll(); startListening(); }
+  else startListening();
+});
+$("composer").addEventListener("submit", (e) => {
+  e.preventDefault();
+  const t = $("textInput").value.trim();
+  if (!t || busy) return;
+  $("textInput").value = "";
+  send(t);
+});
+$("stopBtn").addEventListener("click", stopAll);
+$("newChatBtn").addEventListener("click", () => {
+  if (!confirm("会話をリセットしますか？")) return;
+  stopAll();
+  history = [];
+  store.remove("pallas.history");
+  renderHistory();
+  addMsg("system", "新しい会話を始めました");
+});
+
+function syncSettingsForm() {
+  $("apiKey").value = settings.apiKey;
+  $("rate").value = settings.rate;
+  $("pitch").value = settings.pitch;
+  $("autoListen").checked = settings.autoListen;
+  $("rateVal").textContent = `×${Number(settings.rate).toFixed(2)}`;
+  $("pitchVal").textContent = Number(settings.pitch).toFixed(2);
+  loadVoices();
+}
+$("settingsBtn").addEventListener("click", () => { syncSettingsForm(); $("settings").showModal(); });
+$("rate").addEventListener("input", (e) => $("rateVal").textContent = `×${Number(e.target.value).toFixed(2)}`);
+$("pitch").addEventListener("input", (e) => $("pitchVal").textContent = Number(e.target.value).toFixed(2));
+$("testVoiceBtn").addEventListener("click", () => {
+  const prev = { ...settings };
+  settings.voiceURI = $("voiceSelect").value;
+  settings.rate = Number($("rate").value);
+  settings.pitch = Number($("pitch").value);
+  stopSpeaking();
+  speak("パラスです。準備はできています。");
+  Object.assign(settings, { voiceURI: prev.voiceURI, rate: prev.rate, pitch: prev.pitch });
+});
+$("settingsForm").addEventListener("submit", () => {
+  settings.apiKey = $("apiKey").value.trim();
+  settings.voiceURI = $("voiceSelect").value;
+  settings.rate = Number($("rate").value);
+  settings.pitch = Number($("pitch").value);
+  settings.autoListen = $("autoListen").checked;
+  store.set("pallas.settings", settings);
+});
+
+// 起動
+renderHistory();
+if (!settings.apiKey) {
+  addMsg("system", "はじめに右上の「設定」から Anthropic のAPIキーを入力してください。");
+}
+if (!Recognition) {
+  $("status").textContent = "このブラウザは音声認識に未対応です。文字で話しかけてください";
+}
+</script>
+</body>
+</html>
