@@ -203,9 +203,6 @@
   .msg.system { align-self: center; color: var(--muted); font-size: 12px; background: transparent; padding: 2px; }
   .msg.error { align-self: center; color: var(--danger); font-size: 13px; background: transparent; }
   .msg.interim { opacity: .55; }
-  .sources { margin-top: 8px; padding-top: 6px; border-top: 1px solid rgba(124,196,255,.15); font-size: 12px; color: var(--muted); line-height: 1.6; white-space: normal; }
-  .sources a { color: var(--accent); text-decoration: none; }
-  .sources a:hover { text-decoration: underline; }
 
   /* 入力 */
   footer {
@@ -404,28 +401,9 @@ const PALLAS_SYSTEM_PROMPT = `あなたは「パラス」。りょうさん専�
 - 知らないこと、確かでないことを断定しません。推測の場合は推測だと明言します。
 - りょうさんの利益と安全を最優先に考えます。
 
-# 調べ物
-- あなたはウェブ検索ができます。最新の情報、ニュース、天気、営業時間、価格、知らない固有名詞など、記憶だけでは確かでないことは検索して確かめてから答えます。
-- 雑談や一般常識、考えれば分かることでは検索しません。
-- 検索するときは、最初に「調べますね」のような短い一言だけ添えて、すぐ検索します。
-- 結果は音声で伝わるよう、要点だけを短くまとめます。URLは読み上げず、必要なら「〇〇のサイトによると」のように情報源の名前だけ添えます。出典のリンクは画面に表示されます。
-- 検索しても確かな情報が見つからないときは、そう正直に伝えます。
-
 # 補足
 - ユーザーの発言の先頭には [現在日時: ...] が付きます。これはアプリが自動で付けている情報なので、時間帯や曜日を踏まえた気遣いや先回りに使ってください。読み上げたり言及したりする必要はありません。
 - ユーザーの発言は音声認識の結果なので、誤変換が混じることがあります。文脈から意図を汲み取ってください。`;
-
-// ウェブ検索（Anthropic のサーバー側で実行される）。
-// 会話の途中でツール構成が変わると、履歴の思考ブロックが無効になってエラーになるため、
-// どのモデルでも同じ定義を毎回送る（基本版の web_search_20250305 は全モデル対応）
-const TOOLS = [{
-  type: "web_search_20250305",
-  name: "web_search",
-  max_uses: 3, // 1回の返事での検索回数の上限（料金の目安：1回約1.5円）
-  user_location: { type: "approximate", country: "JP", timezone: "Asia/Tokyo" },
-}];
-// 履歴の形式の版。ツール構成を変えたら上げる（古い履歴はリセットする）
-const HISTORY_VERSION = 2;
 
 // 使えるモデル。普段は Haiku（安い・速い）、じっくり相談したいときだけ上位モデルに切り替える
 const MODELS = {
@@ -448,11 +426,6 @@ const settings = Object.assign(
 );
 // API に送る会話履歴。アシスタントの応答は content ブロックをそのまま保存する（thinking ブロックも含めて変更しない）
 let history = store.get("pallas.history", []);
-if (store.get("pallas.historyVersion", 1) !== HISTORY_VERSION) {
-  history = [];
-  store.remove("pallas.history");
-  store.set("pallas.historyVersion", HISTORY_VERSION);
-}
 let client = null;
 let clientKey = "";
 let currentStream = null;
@@ -472,36 +445,6 @@ function addMsg(role, text) {
   $("log").scrollTop = $("log").scrollHeight;
   return el;
 }
-// 返事に含まれる出典（ウェブ検索の引用）を集める
-function collectSources(content) {
-  const seen = new Map();
-  for (const b of content || []) {
-    if (b.type === "text" && Array.isArray(b.citations)) {
-      for (const c of b.citations) {
-        if (c.url && !seen.has(c.url)) seen.set(c.url, c.title || c.url);
-      }
-    }
-  }
-  return [...seen].map(([url, title]) => ({ url, title }));
-}
-function renderSources(bubble, sources) {
-  if (!sources.length) return;
-  const box = document.createElement("div");
-  box.className = "sources";
-  box.append("出典：");
-  sources.forEach((src, i) => {
-    const a = document.createElement("a");
-    a.href = src.url;
-    a.target = "_blank";
-    a.rel = "noopener noreferrer";
-    a.textContent = src.title;
-    a.title = src.url;
-    if (i) box.append(" / ");
-    box.append(a);
-  });
-  bubble.appendChild(box);
-}
-
 function renderHistory() {
   $("log").innerHTML = "";
   for (const m of history) {
@@ -510,7 +453,7 @@ function renderHistory() {
       addMsg("user", t.replace(/^\[現在日時:[^\]]*\]\s*/, ""));
     } else if (m.role === "assistant") {
       const t = m.content.filter(b => b.type === "text").map(b => b.text).join("");
-      if (t) renderSources(addMsg("assistant", t), collectSources(m.content));
+      if (t) addMsg("assistant", t);
     }
   }
 }
@@ -963,7 +906,7 @@ async function send(text) {
       model: MODELS[modelKey].id,
       max_tokens: 16000,
       system: PALLAS_SYSTEM_PROMPT,
-      tools: TOOLS,
+      messages,
       // 会話向けなので effort は low（速さと料金を優先）
       output_config: { effort: "low" },
       cache_control: { type: "ephemeral" },
@@ -973,39 +916,18 @@ async function send(text) {
       params.betas = ["server-side-fallback-2026-07-01"];
       params.fallbacks = "default";
     }
-    // 検索が長引くと API が途中で一度返してくる（pause_turn）ので、そのまま送り返して続きを受け取る
-    let turnMessages = messages;
-    const assistantParts = [];
-    let final = null;
-    for (let round = 0; round < 4; round++) {
-      currentStream = c.beta.messages.stream({ ...params, messages: turnMessages });
+    currentStream = c.beta.messages.stream({
+      ...params,
+    });
 
-      currentStream.on("text", (delta) => {
-        shownText += delta;
-        bubble.textContent = shownText;
-        $("log").scrollTop = $("log").scrollHeight;
-        speaker.push(delta);
-      });
-      // 検索の様子を状態表示に出す
-      currentStream.on("streamEvent", (ev) => {
-        if (ev.type === "content_block_start" && ev.content_block?.type === "server_tool_use") {
-          setState("thinking", "ネットで調べています…");
-        } else if (ev.type === "content_block_start" && ev.content_block?.type === "web_search_tool_result") {
-          setState("thinking", "調べた内容をまとめています…");
-        }
-      });
-      currentStream.on("contentBlock", (block) => {
-        if (block.type === "server_tool_use" && block.input?.query) {
-          setState("thinking", `「${block.input.query}」を調べています…`);
-        }
-      });
+    currentStream.on("text", (delta) => {
+      shownText += delta;
+      bubble.textContent = shownText;
+      $("log").scrollTop = $("log").scrollHeight;
+      speaker.push(delta);
+    });
 
-      final = await currentStream.finalMessage();
-      if (final.stop_reason !== "pause_turn") break;
-      const part = { role: "assistant", content: contentForHistory(final.content) };
-      assistantParts.push(part);
-      turnMessages = [...turnMessages, part];
-    }
+    const final = await currentStream.finalMessage();
     speaker.flush();
 
     if (final.stop_reason === "refusal") {
@@ -1013,11 +935,9 @@ async function send(text) {
       if (!shownText) { bubble.textContent = note; speak(note); }
       // 断られたやり取りは履歴に残さない（次の会話に影響させない）
     } else {
-      const lastPart = { role: "assistant", content: contentForHistory(final.content) };
-      history = [...messages, ...assistantParts, lastPart];
+      history = [...messages, { role: "assistant", content: contentForHistory(final.content) }];
       store.set("pallas.history", history);
       if (!shownText) bubble.remove();
-      else renderSources(bubble, collectSources([...assistantParts, lastPart].flatMap(m => m.content)));
     }
   } catch (err) {
     speaker.flush();
