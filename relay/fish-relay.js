@@ -4,6 +4,7 @@
 //   /v1/tts, /v1/asr : Fish Audio（声を作る・声を文字にする）
 //   /google/token    : Google ログインの維持（認可コード・リフレッシュトークンをアクセストークンに交換）
 //   /maps/search     : Google マップのお店・場所検索（Places API）
+//   /maps/route      : Google マップの経路検索（Routes API）。行き方・所要時間・乗り換え
 // 設置方法は relay/README.md を参照。
 
 // パラスを開くページのURL（オリジン）。ここ以外からの呼び出しは断る
@@ -44,6 +45,7 @@ export default {
 
     if (url.pathname === "/google/token") return googleToken(request, env, cors);
     if (url.pathname === "/maps/search") return mapsSearch(request, env, cors);
+    if (url.pathname === "/maps/route") return mapsRoute(request, env, cors);
     if (!Object.hasOwn(FISH_ROUTES, url.pathname)) {
       return json({ status: 404, message: "not found" }, 404, cors);
     }
@@ -173,6 +175,90 @@ async function mapsSearch(request, env, cors) {
     url: p.googleMapsUri || "",
   }));
   return json({ places }, 200, cors);
+}
+
+// ===== Google マップの経路検索 =====
+// Routes API の computeRoutes。キーは検索と同じ GOOGLE_MAPS_KEY（キーの制限で「Routes API」も許可しておく）。
+// 料金：毎月 1万回まで無料（車の渋滞を考える経路は 5千回まで無料）
+const TRAVEL_MODES = { walk: "WALK", drive: "DRIVE", transit: "TRANSIT", bicycle: "BICYCLE" };
+function waypoint(v) {
+  if (v && typeof v.lat === "number" && typeof v.lng === "number") {
+    return { location: { latLng: { latitude: v.lat, longitude: v.lng } } };
+  }
+  if (typeof v === "string" && v.trim()) return { address: v.trim().slice(0, 200) };
+  return null;
+}
+async function mapsRoute(request, env, cors) {
+  if (!env.GOOGLE_MAPS_KEY) {
+    return json({ status: 500, message: "中継サーバーに GOOGLE_MAPS_KEY が設定されていません" }, 500, cors);
+  }
+  let body;
+  try { body = await request.json(); } catch { body = {}; }
+  const origin = waypoint(body.origin);
+  const destination = waypoint(body.destination);
+  if (!origin || !destination) return json({ status: 400, message: "出発地と目的地が必要です" }, 400, cors);
+  const mode = TRAVEL_MODES[body.mode] || "WALK";
+
+  const req = { origin, destination, travelMode: mode, languageCode: "ja", regionCode: "jp", units: "METRIC" };
+  if (mode === "DRIVE") req.routingPreference = "TRAFFIC_AWARE";
+  const t = (v) => (typeof v === "string" && !Number.isNaN(Date.parse(v)) ? new Date(v).toISOString() : null);
+  if (mode === "TRANSIT" && t(body.arrive_by)) req.arrivalTime = t(body.arrive_by);
+  else if ((mode === "TRANSIT" || mode === "DRIVE") && t(body.depart_at) && Date.parse(body.depart_at) > Date.now()) req.departureTime = t(body.depart_at);
+
+  const res = await fetch("https://routes.googleapis.com/directions/v2:computeRoutes", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Goog-Api-Key": env.GOOGLE_MAPS_KEY,
+      "X-Goog-FieldMask": [
+        "routes.duration", "routes.distanceMeters", "routes.polyline.encodedPolyline",
+        "routes.legs.startLocation", "routes.legs.endLocation",
+        "routes.legs.steps.travelMode", "routes.legs.steps.staticDuration", "routes.legs.steps.distanceMeters",
+        "routes.legs.steps.navigationInstruction.instructions", "routes.legs.steps.transitDetails",
+      ].join(","),
+    },
+    body: JSON.stringify(req),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    return json({ status: res.status, message: data.error?.message || "route error" }, res.status, cors);
+  }
+  const r = data.routes?.[0];
+  if (!r) return json({ route: null }, 200, cors);
+  const leg = r.legs?.[0] || {};
+  const ll = (p) => (p?.latLng ? { lat: p.latLng.latitude, lng: p.latLng.longitude } : null);
+  const sec = (d) => (d ? parseInt(d, 10) || 0 : 0);
+  const steps = (leg.steps || []).map((s) => {
+    const td = s.transitDetails;
+    return {
+      mode: s.travelMode || mode,
+      seconds: sec(s.staticDuration),
+      meters: s.distanceMeters || 0,
+      text: s.navigationInstruction?.instructions || "",
+      transit: td ? {
+        line: td.transitLine?.nameShort || td.transitLine?.name || "",
+        vehicle: td.transitLine?.vehicle?.name?.text || "",
+        color: td.transitLine?.color || "",
+        headsign: td.headsign || "",
+        from: td.stopDetails?.departureStop?.name || "",
+        to: td.stopDetails?.arrivalStop?.name || "",
+        depart: td.stopDetails?.departureTime || "",
+        arrive: td.stopDetails?.arrivalTime || "",
+        stops: td.stopCount || 0,
+      } : null,
+    };
+  });
+  return json({
+    route: {
+      mode,
+      seconds: sec(r.duration),
+      meters: r.distanceMeters || 0,
+      polyline: r.polyline?.encodedPolyline || "",
+      start: ll(leg.startLocation),
+      end: ll(leg.endLocation),
+      steps,
+    },
+  }, 200, cors);
 }
 
 function json(body, status, cors) {

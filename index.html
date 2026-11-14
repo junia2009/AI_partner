@@ -341,6 +341,13 @@
   .info-actions { display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
   .info-actions a { font-size: 12px; text-decoration: none; color: var(--text); padding: 5px 10px; border-radius: 999px; border: 1px solid rgba(124,196,255,.35); background: rgba(124,196,255,.08); }
   .info-actions a:hover { border-color: var(--accent); }
+  .info-actions .info-btn { font-size: 12px; color: var(--text); padding: 5px 10px; border-radius: 999px; border: 1px solid rgba(124,196,255,.35); background: rgba(124,196,255,.08); }
+  .info-actions .info-btn.on { border-color: var(--accent); background: rgba(124,196,255,.25); }
+  .info-actions a.nav-go { background: var(--accent); color: #0b0f17; border-color: var(--accent); font-weight: 700; }
+  .route-sum { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+  .route-sum .big { font-size: 22px; font-weight: 700; color: var(--accent); font-variant-numeric: tabular-nums; }
+  .route-icon { flex: none; width: 22px; text-align: center; font-size: 15px; }
+  .line-dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 6px; vertical-align: 1px; }
   .info-day { padding: 8px 14px 2px; font-size: 12px; color: var(--accent); letter-spacing: .08em; }
   .info-time { flex: none; width: 92px; font-size: 13px; color: var(--muted); font-variant-numeric: tabular-nums; }
   .info-empty { padding: 16px 14px; color: var(--muted); font-size: 13px; }
@@ -621,6 +628,8 @@ const PALLAS_SYSTEM_PROMPT = `あなたは「パラス」。マスター専属�
 - メールは gmail_list で確かめ、差出人と用件を短くまとめて伝えます。本文を全部読み上げることはしません。必要なら gmail_read で中身を確かめます。
 - 返信を頼まれたら gmail_create_draft で下書きを保存します。メールを送信する道具はありません。「下書きに入れておきました。確認して送ってください」と伝えます。
 - お店や場所を聞かれたら maps_search で探します。おすすめは2〜3件に絞り、評価・近さ・営業中かを短く伝えます。住所やURLは読み上げません（地図のリンクは画面に出ます）。
+- 「〇〇までの行き方」「〇〇まで何分？」「〇〇までナビして」と聞かれたら maps_directions で調べます。移動手段の指定がなければ mode は auto にします。所要時間・到着の目安・乗り換え（電車なら路線と乗る駅）を2〜3文で伝え、「ナビ開始のボタンを押せば案内が始まります」と添えます。道順を一つずつ読み上げることはしません。
+- 「何時に出ればいい？」と聞かれたら、着きたい時刻を arrive_by に入れて調べます。直前にお店を探していれば、その名前を目的地にします。
 - 朝の報告では、Google につながっていれば calendar_list_events で今日の予定も確かめて伝えます。
 - お店・予定・メールを調べると、詳しい一覧（地図や時刻、ボタン）が画面のカードに表示されます。声では要点だけを伝え、「詳しくは画面に出しています」と添える程度にします。
 
@@ -884,6 +893,23 @@ const TOOLS = [
         sort: { type: "string", enum: ["relevance", "distance"], description: "並び順。近い順なら distance" },
       },
       required: ["query"],
+      additionalProperties: false,
+    },
+    eager_input_streaming: true,
+  },
+  {
+    name: "maps_directions",
+    description: "目的地までの行き方（経路・所要時間・距離・乗り換え）を Google マップで調べ、地図つきのカードと「ナビ開始」ボタンを画面に出す。「〇〇までの行き方」「〇〇まで何分？」「〇〇までナビして」と頼まれたときに使う。出発地を省くとマスターの現在地から調べる。",
+    input_schema: {
+      type: "object",
+      properties: {
+        destination: { type: "string", description: "目的地。駅名・施設名・住所など（例：東京駅、渋谷スクランブルスクエア）" },
+        mode: { type: "string", enum: ["auto", "walk", "transit", "drive", "bicycle"], description: "移動手段。指定がなければ auto（近ければ徒歩、遠ければ電車や車を自動で選ぶ）" },
+        origin: { type: "string", description: "出発地。現在地から行くときは省く" },
+        arrive_by: { type: "string", description: "この時刻までに着きたいとき（電車のみ）。ISO 形式の日時（例：2026-11-14T18:30:00+09:00）" },
+        depart_at: { type: "string", description: "出発する時刻を決めているとき（電車・車）。ISO 形式の日時" },
+      },
+      required: ["destination"],
       additionalProperties: false,
     },
     eager_input_streaming: true,
@@ -1483,6 +1509,225 @@ async function mapsSearch(input) {
     return { error: `マップの検索でエラー：${err.message}` };
   }
 }
+// --- 経路案内（ナビ） ---
+const MODE_LABEL = { walk: "徒歩", transit: "電車・バス", drive: "車", bicycle: "自転車" };
+const MODE_ICON = { walk: "🚶", transit: "🚃", drive: "🚗", bicycle: "🚲" };
+const GMAPS_MODE = { walk: "walking", transit: "transit", drive: "driving", bicycle: "bicycling" };
+// Google の「エンコードされたポリライン」を緯度経度の並びに戻す
+function decodePolyline(str) {
+  const pts = [];
+  let i = 0, lat = 0, lng = 0;
+  while (i < str.length) {
+    for (const k of [0, 1]) {
+      let shift = 0, result = 0, b;
+      do { b = str.charCodeAt(i++) - 63; result |= (b & 0x1f) << shift; shift += 5; } while (b >= 0x20 && i < str.length);
+      const d = result & 1 ? ~(result >> 1) : result >> 1;
+      if (k === 0) lat += d; else lng += d;
+    }
+    pts.push({ lat: lat / 1e5, lng: lng / 1e5 });
+  }
+  return pts;
+}
+function fmtDuration(sec) {
+  const m = Math.max(1, Math.round(sec / 60));
+  return m < 60 ? `${m}分` : `${Math.floor(m / 60)}時間${m % 60 ? `${m % 60}分` : ""}`;
+}
+function fmtDistance(m) { return m < 1000 ? `${Math.max(10, Math.round(m / 10) * 10)}m` : `${(m / 1000).toFixed(m < 10000 ? 1 : 0)}km`; }
+function hhmm(d) { return `${d.getHours()}:${String(d.getMinutes()).padStart(2, "0")}`; }
+function navUrl(dest, mode) {
+  return `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(dest)}&travelmode=${GMAPS_MODE[mode] || "walking"}&dir_action=navigate`;
+}
+async function fetchRoute(origin, destination, mode, input) {
+  const data = await relayPost("/maps/route", { origin, destination, mode, depart_at: input.depart_at, arrive_by: input.arrive_by });
+  return data.route && data.route.seconds ? { ...data.route, key: mode } : null;
+}
+// 経路の要点（声と表示の両方で使う）。電車は路線ごと、歩きはまとめて1行にする
+function routeLegs(route) {
+  const legs = [];
+  for (const st of route.steps || []) {
+    if (st.transit) { legs.push({ kind: "transit", ...st.transit, seconds: st.seconds }); continue; }
+    const kind = st.mode === "WALK" ? "walk" : st.mode === "DRIVE" ? "drive" : st.mode === "BICYCLE" ? "bicycle" : "walk";
+    const prev = legs[legs.length - 1];
+    if (prev && prev.kind === kind) { prev.seconds += st.seconds; prev.meters += st.meters; if (st.text) prev.texts.push(st.text); }
+    else legs.push({ kind, seconds: st.seconds, meters: st.meters, texts: st.text ? [st.text] : [] });
+  }
+  return legs;
+}
+function timeOf(iso) { const d = iso ? new Date(iso) : null; return d && !isNaN(d) ? hhmm(d) : ""; }
+async function mapsDirections(input, { fromCard = false } = {}) {
+  const destText = typeof input?.destination === "string" ? input.destination.trim() : "";
+  const hasLL = typeof input?.dest_lat === "number" && typeof input?.dest_lng === "number";
+  if (!destText && !hasLL) return { error: "destination が空です" };
+  const dest = hasLL ? { lat: input.dest_lat, lng: input.dest_lng } : destText;
+  let origin = typeof input.origin === "string" && input.origin.trim() ? input.origin.trim() : null;
+  let pos = null;
+  if (!origin) {
+    pos = await currentPosition();
+    if (!pos) return { error: "現在地を取得できませんでした。端末の位置情報の許可を確認するか、出発地を教えてもらうよう伝えること" };
+    origin = pos;
+  }
+  const want = ["walk", "transit", "drive", "bicycle"].includes(input.mode) ? input.mode : "auto";
+  let route = null, note = "";
+  const tryRoute = (mode) => fetchRoute(origin, dest, mode, input).catch((e) => { if (e.status === 0 || e.status === 403 || e.status === 500) throw e; return null; });
+  try {
+    if (want === "auto") {
+      route = await tryRoute("walk");
+      if (!route || route.seconds > 25 * 60) {
+        const tr = await tryRoute("transit");
+        if (tr && (!route || tr.seconds < route.seconds)) route = tr;
+        else if (!tr) {
+          const dr = await tryRoute("drive");
+          if (dr && (!route || route.seconds > 40 * 60)) route = dr;
+        }
+      }
+    } else {
+      route = await tryRoute(want);
+      if (!route && want === "transit") {
+        route = await tryRoute("drive");
+        if (route) note = "電車・バスの経路は取れなかったので、車での目安を出しています。電車の乗り換えは「ナビ開始」で Google マップのアプリを開くと見られます。";
+      }
+    }
+  } catch (err) {
+    if (err.status === 0) return { error: "中継サーバーのURLが設定されていません" };
+    if (err.status === 500 && /GOOGLE_MAPS_KEY/.test(err.message)) return { error: "中継サーバーに Google マップのキーが設定されていません。マスターに設定が必要だと伝えること" };
+    if (err.status === 403 || /Routes API/i.test(err.message)) return { error: "Google Cloud で Routes API が有効になっていないか、キーで許可されていません。マスターに設定が必要だと伝えること" };
+    return { error: `経路の検索でエラー：${err.message}` };
+  }
+  if (!route) return { error: "経路が見つかりませんでした。目的地の名前を詳しくするか、別の移動手段で試すこと" };
+
+  const destName = destText || "目的地";
+  const navDest = hasLL ? `${input.dest_lat},${input.dest_lng}` : destText;
+  const arriveBy = input.arrive_by && !isNaN(Date.parse(input.arrive_by)) ? new Date(input.arrive_by) : null;
+  const legs = routeLegs(route);
+  const firstTransit = legs.find((l) => l.kind === "transit");
+  let start = new Date(), eta;
+  if (route.mode === "TRANSIT" && arriveBy) { eta = arriveBy; start = new Date(arriveBy.getTime() - route.seconds * 1000); }
+  else if (input.depart_at && !isNaN(Date.parse(input.depart_at)) && Date.parse(input.depart_at) > Date.now()) start = new Date(input.depart_at);
+  eta = eta || new Date(start.getTime() + route.seconds * 1000);
+  const modeKey = route.key;
+  showRoutePanel({ destName, navDest, route, legs, modeKey, start, eta, note, pos, input });
+
+  if (fromCard) return null;
+  const lines = [`${MODE_LABEL[modeKey]}で約${fmtDuration(route.seconds)}（${fmtDistance(route.meters)}）。${arriveBy && modeKey === "transit" ? `${hhmm(start)}ごろ出発` : `到着は${hhmm(eta)}ごろ`}`];
+  if (firstTransit) {
+    for (const l of legs) {
+      if (l.kind === "transit") lines.push(`- ${l.line || l.vehicle}${l.headsign ? `（${l.headsign}行き）` : ""}：${l.from}${timeOf(l.depart) ? ` ${timeOf(l.depart)}発` : ""} → ${l.to}${l.stops ? `（${l.stops}駅）` : ""}`);
+      else if (l.seconds >= 60) lines.push(`- ${MODE_LABEL[l.kind]} ${fmtDuration(l.seconds)}`);
+    }
+  }
+  if (note) lines.push(note);
+  lines.push("画面に経路の地図と「ナビ開始」ボタンを出した（押すと Google マップのナビが始まる）");
+  return { result: lines.join("\n") };
+}
+// 情報カードのボタンから（パラスを通さず、その場で経路を出す）
+async function routeFromCard(input) {
+  setState("thinking", "経路を調べています…");
+  const res = await mapsDirections(input, { fromCard: true });
+  setState("idle", "マイクを押して話しかけてください");
+  if (res?.error) addMsg("error", res.error.replace(/。?マスターに.*$|。?出発地を.*$|。?目的地の名前.*$/, "。"));
+}
+function showRoutePanel({ destName, navDest, route, legs, modeKey, start, eta, note, pos, input }) {
+  openInfoPanel(`🧭 ${destName}まで`, (body) => {
+    // まとめ
+    const sum = el("div", "info-item");
+    sum.appendChild(el("div", "route-icon", MODE_ICON[modeKey]));
+    const main = el("div", "info-main");
+    const row = el("div", "route-sum");
+    row.appendChild(el("span", "big", `約${fmtDuration(route.seconds)}`));
+    row.appendChild(el("span", "info-sub", `${MODE_LABEL[modeKey]} ・ ${fmtDistance(route.meters)} ・ ${hhmm(start)}発 → ${hhmm(eta)}着`));
+    main.appendChild(row);
+    if (note) main.appendChild(el("div", "info-sub", note));
+    const acts = el("div", "info-actions");
+    const go = link("▶ ナビ開始", navUrl(navDest, modeKey));
+    go.classList.add("nav-go");
+    acts.appendChild(go);
+    // ほかの移動手段に切り替える
+    for (const k of ["walk", "transit", "drive", "bicycle"]) {
+      const b = el("button", `info-btn${k === modeKey ? " on" : ""}`, `${MODE_ICON[k]} ${MODE_LABEL[k]}`);
+      b.type = "button";
+      if (k !== modeKey) b.addEventListener("click", () => routeFromCard({ ...input, mode: k }));
+      acts.appendChild(b);
+    }
+    main.appendChild(acts);
+    sum.appendChild(main);
+    body.appendChild(sum);
+    // 道順
+    for (const l of legs) {
+      if (l.kind !== "transit" && l.seconds < 30 && legs.length > 1) continue;
+      const item = el("div", "info-item");
+      item.appendChild(el("div", "route-icon", l.kind === "transit" ? "🚃" : MODE_ICON[l.kind]));
+      const m = el("div", "info-main");
+      if (l.kind === "transit") {
+        const name = el("div", "info-name");
+        if (l.color) { const dot = el("span", "line-dot"); dot.style.background = l.color; name.appendChild(dot); }
+        name.append(`${l.line || l.vehicle}${l.headsign ? `（${l.headsign}行き）` : ""}`);
+        m.appendChild(name);
+        m.appendChild(el("div", "info-sub", `${l.from}${timeOf(l.depart) ? ` ${timeOf(l.depart)}発` : ""} → ${l.to}${timeOf(l.arrive) ? ` ${timeOf(l.arrive)}着` : ""}${l.stops ? `（${l.stops}駅）` : ""}`));
+      } else {
+        m.appendChild(el("div", "info-name", `${MODE_LABEL[l.kind]} ${fmtDuration(l.seconds)}（${fmtDistance(l.meters)}）`));
+        // 徒歩・車だけの経路は、曲がる場所を少し見せる
+        if (!legs.some((x) => x.kind === "transit")) {
+          const turns = l.texts.filter(Boolean).slice(0, 8);
+          if (turns.length) m.appendChild(el("div", "info-sub", turns.join(" → ")));
+        }
+      }
+      item.appendChild(m);
+      body.appendChild(item);
+    }
+  });
+  drawRouteMap(route, pos);
+}
+async function drawRouteMap(route, pos) {
+  const path = route.polyline ? decodePolyline(route.polyline) : [];
+  if (path.length < 2) return;
+  lastLeafletFallback = () => drawLeafletRoute(path);
+  if (settings.googleMapsKey && !gmapsFailed) {
+    try {
+      const gm = await loadGoogleMaps();
+      if ($("infoPanel").hidden || gmapsFailed) return;
+      const { Map, Polyline } = await gm.importLibrary("maps");
+      const { Marker } = await gm.importLibrary("marker");
+      const box = $("infoMap");
+      box.hidden = false;
+      box.innerHTML = "";
+      const map = new Map(box, {
+        disableDefaultUI: true, zoomControl: true, clickableIcons: false, gestureHandling: "greedy",
+        styles: GMAP_DARK, backgroundColor: "#0b0f17",
+      });
+      new Polyline({ map, path, strokeColor: "#7cc4ff", strokeOpacity: 0.95, strokeWeight: 5 });
+      new Marker({ map, position: path[0], title: "出発", zIndex: 999,
+        icon: { path: gm.SymbolPath.CIRCLE, scale: 7, fillColor: "#4ea1ff", fillOpacity: 1, strokeColor: "#ffffff", strokeWeight: 2 } });
+      new Marker({ map, position: path[path.length - 1], title: "目的地",
+        label: { text: "G", color: "#0b0f17", fontWeight: "700", fontSize: "12px" },
+        icon: { path: gm.SymbolPath.CIRCLE, scale: 11, fillColor: "#7cc4ff", fillOpacity: 1, strokeColor: "#0b0f17", strokeWeight: 2 } });
+      const bounds = new gm.LatLngBounds();
+      path.forEach((p) => bounds.extend(p));
+      map.fitBounds(bounds, 24);
+      return;
+    } catch (err) { console.warn(err); if ($("infoPanel").hidden) return; }
+  }
+  return drawLeafletRoute(path);
+}
+async function drawLeafletRoute(path) {
+  $("infoMap").innerHTML = "";
+  let L;
+  try { L = await loadLeaflet(); } catch { return; }
+  if ($("infoPanel").hidden) return;
+  const box = $("infoMap");
+  box.hidden = false;
+  if (infoMap) infoMap.remove();
+  infoMap = L.map(box, { zoomControl: false, attributionControl: true });
+  L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png", {
+    maxZoom: 19, subdomains: "abcd",
+    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> &copy; <a href="https://carto.com/attributions">CARTO</a>',
+  }).addTo(infoMap);
+  const ll = path.map((p) => [p.lat, p.lng]);
+  L.polyline(ll, { color: "#7cc4ff", weight: 5, opacity: 0.95 }).addTo(infoMap);
+  L.marker(ll[0], { icon: L.divIcon({ className: "", html: '<div class="pin me"></div>', iconSize: [14, 14], iconAnchor: [7, 7] }) }).addTo(infoMap);
+  L.marker(ll[ll.length - 1], { icon: L.divIcon({ className: "", html: '<div class="pin">G</div>', iconSize: [22, 22], iconAnchor: [11, 11] }) }).addTo(infoMap);
+  infoMap.fitBounds(ll, { padding: [24, 24], maxZoom: 17 });
+}
+
 // ===== 情報カード =====
 function el(tag, cls, text) {
   const e = document.createElement(tag);
@@ -1538,8 +1783,7 @@ function loadGoogleMaps() {
     window.gm_authFailure = () => {
       gmapsFailed = true;
       addMsg("error", "Google マップのキーが使えませんでした。キーの「ウェブサイトの制限」と「Maps JavaScript API」の許可を確認してください。いまは別の地図で表示します。");
-      const p = lastPlacesForMap;
-      if (p) drawLeafletMap(p.places, p.pos);
+      lastLeafletFallback?.();
     };
     const sc = document.createElement("script");
     sc.src = `https://maps.googleapis.com/maps/api/js?key=${encodeURIComponent(settings.googleMapsKey)}&loading=async&callback=__pallasGmapsReady&language=ja&region=JP&v=weekly`;
@@ -1564,7 +1808,7 @@ const GMAP_DARK = [
   { featureType: "water", elementType: "geometry", stylers: [{ color: "#0d1a2e" }] },
   { featureType: "water", elementType: "labels.text.fill", stylers: [{ color: "#4a5f86" }] },
 ];
-let lastPlacesForMap = null;
+let lastLeafletFallback = null; // Google マップが使えなかったとき、同じ内容を別の地図で描き直す
 async function drawGoogleMap(places, pos) {
   const pts = places.filter((p) => p.lat != null);
   const gm = await loadGoogleMaps();
@@ -1604,7 +1848,7 @@ async function drawGoogleMap(places, pos) {
 }
 async function drawPlacesMap(places, pos) {
   if (!places.some((p) => p.lat != null)) return;
-  lastPlacesForMap = { places, pos };
+  lastLeafletFallback = () => drawLeafletMap(places, pos);
   if (settings.googleMapsKey && !gmapsFailed) {
     try { if (await drawGoogleMap(places, pos)) return; } catch (err) { console.warn(err); }
     if ($("infoPanel").hidden) return;
@@ -1661,7 +1905,12 @@ function showPlacesPanel(query, places, pos) {
       main.appendChild(el("div", "info-sub", [pl.type, pl.address].filter(Boolean).join(" ・ ")));
       const acts = el("div", "info-actions");
       acts.appendChild(link("地図で開く", pl.url || `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(pl.name + " " + pl.address)}`));
-      if (pl.lat != null) acts.appendChild(link("経路", `https://www.google.com/maps/dir/?api=1&destination=${pl.lat},${pl.lng}&travelmode=walking`));
+      if (pl.lat != null) {
+        const go = el("button", "info-btn", "🧭 行き方");
+        go.type = "button";
+        go.addEventListener("click", () => routeFromCard({ destination: pl.name, dest_lat: pl.lat, dest_lng: pl.lng }));
+        acts.appendChild(go);
+      }
       main.appendChild(acts);
       item.appendChild(main);
       body.appendChild(item);
@@ -1800,6 +2049,7 @@ async function runTool(name, input) {
   if (name === "gmail_read") return gmailRead(input);
   if (name === "gmail_create_draft") return gmailDraft(input);
   if (name === "maps_search") return mapsSearch(input);
+  if (name === "maps_directions") return mapsDirections(input);
   if (name === "remember") {
     const text = typeof input?.text === "string" ? input.text.trim().slice(0, 200) : "";
     if (!text) return { error: "text が空です" };
