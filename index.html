@@ -112,6 +112,8 @@
   body[data-state="thinking"] .brand::before { background: var(--accent-2); box-shadow: 0 0 8px var(--accent-2); animation-duration: .6s; }
   @keyframes blinkDot { 50% { opacity: .3; } }
   .head-actions { display: flex; gap: 6px; }
+  .bgm-btn { min-width: 40px; }
+  .bgm-btn.on { color: var(--accent); border-color: var(--accent); box-shadow: 0 0 10px rgba(124,196,255,.35); }
   .icon-btn {
     background: rgba(18,24,38,.5); backdrop-filter: blur(6px); border: 1px solid var(--line); border-radius: 10px;
     padding: 6px 10px; font-size: 13px; color: var(--muted);
@@ -396,6 +398,7 @@
     <button class="icon-btn" id="installBtn" title="ホーム画面にアプリとして追加" hidden>アプリに追加</button>
     <select class="icon-btn model-select" id="modelSelect" title="パラスの頭脳（モデル）" aria-label="モデル"></select>
     <button class="icon-btn" id="newChatBtn" title="会話をリセット">新しい会話</button>
+    <button class="icon-btn bgm-btn" id="bgmBtn" title="BGM を流す" aria-pressed="false">♪</button>
     <button class="icon-btn" id="settingsBtn" title="設定">設定</button>
   </div>
 </header>
@@ -511,6 +514,22 @@
     <div class="field" id="browserVoiceField">
       <label for="voiceSelect">パラスの声（ブラウザ標準）</label>
       <select id="voiceSelect"></select>
+    </div>
+    <div class="field">
+      <label for="bgmStyle">BGM の曲調</label>
+      <select id="bgmStyle">
+        <option value="auto">おまかせ（景色に合わせる）</option>
+        <option value="synthwave">シンセウェーブ（電子的・前向き）</option>
+        <option value="lofi">ローファイ（落ち着く・作業向け）</option>
+        <option value="ambient">アンビエント（静か・集中・夜）</option>
+        <option value="bright">さわやか（明るい・朝）</option>
+        <option value="rain">雨とピアノ（しっとり）</option>
+      </select>
+    </div>
+    <div class="field">
+      <label for="bgmVolume">BGM の音量 <span id="bgmVolVal"></span></label>
+      <input id="bgmVolume" type="range" min="0" max="100" step="5">
+      <p class="hint">右上の ♪ ボタンか、「BGM流して」「音楽止めて」で操作できます。パラスが話すときは小さくなり、聞き取り中は止まります。</p>
     </div>
     <div class="field">
       <label for="rate">話す速さ <span id="rateVal"></span></label>
@@ -697,6 +716,12 @@ const PALLAS_SYSTEM_PROMPT = `あなたは「パラス」。マスター専属�
 - 資料には、マスターが作っているゲーム「HOVER DODGE」の資料もあります。ゲームの物語には、あなた（パラス）がまだ経験していない先の出来事も描かれています。それはマスターの作品の話として語り、自分の身に起きたこととしては扱いません。マスターの作品なので、制作の相談には誇りを持って本気で付き合い、良いところも気になるところも率直に言います。物語の結末や正体などのネタバレは、聞かれたときだけ答えます。
 - 発言の先頭の [ ] で囲まれた情報（[呼び名]、[現在日時] など）はアプリが付けたものです。返事の中に [ ] の形で書き写してはいけません（返事の最初の [気分: 〇〇] だけは例外です）。
 - 発言の前に [資料からの抜粋] が付いていることがあります。マスターの発言に関係しそうな資料の部分を自動で探して添えたものです。関係があれば、それを根拠に答え、足りなければ search_knowledge でさらに調べます。関係がなければ無視します。抜粋が付いているときに「資料は見ていない」とは言いません。
+
+# BGM
+- 「BGM流して」「音楽かけて」「止めて」「落ち着く曲にして」「音量下げて」と頼まれたら music を使います。曲は、あなたが端末の中で合成して流すものです。
+- 曲調の目安：作業や読書にはローファイ（lofi）かアンビエント（ambient）、朝や気分を上げたいときはさわやか（bright）、夜や集中にはアンビエント、雨の日やしっとりしたいときは雨とピアノ（rain）、気合いを入れたいときはシンセウェーブ（synthwave）。指定がなければ auto（景色に合わせる）。
+- 頼まれていないのに勝手に流しません。作業を始める、眠れないなど、合いそうな場面で一度だけ「BGM流しましょうか」と提案するのはかまいません。
+- 流したら「〇〇を流します」と短く一言だけ。曲の説明は聞かれたときだけします。
 
 # 景色（画面の背景）
 - 画面の背景には、電脳空間・夜の街の上空・星空・雲の上（朝焼け・青空・夕焼け）・雨の夜のどれかの景色が映っています。今の景色は発言の先頭の [景色] でわかります。
@@ -999,6 +1024,20 @@ const TOOLS = [
     eager_input_streaming: true,
   },
   {
+    name: "music",
+    description: "BGM（パラスが端末の中で合成する音楽）を流す・止める・曲調を変える・音量を変える。「BGM流して」「音楽止めて」「落ち着く曲にして」「音量下げて」と頼まれたときに使う。",
+    input_schema: {
+      type: "object",
+      properties: {
+        action: { type: "string", enum: ["play", "stop", "volume"], description: "play：流す（流れているときは曲調を変える）、stop：止める、volume：音量だけ変える" },
+        style: { type: "string", enum: ["auto", "synthwave", "lofi", "ambient", "bright", "rain"], description: "曲調。auto＝背景の景色に合わせる、synthwave＝電子的で前向き、lofi＝落ち着くローファイ（作業向け）、ambient＝静かで宇宙的（集中・夜）、bright＝明るくさわやか（朝）、rain＝雨音とピアノ。指定がなければ省く" },
+        volume: { type: "number", description: "音量 0〜100（目安：小さめ 20、ふつう 40、大きめ 70）" },
+      },
+      required: ["action"],
+      additionalProperties: false,
+    },
+  },
+  {
     name: "add_todo",
     description: "やることリストに1件追加する。「〜を追加して」「やることに入れて」と頼まれたときに使う。",
     input_schema: {
@@ -1024,6 +1063,251 @@ const TOOLS = [
     eager_input_streaming: true,
   },
 ];
+
+// ===== BGM（音楽ファイルは使わず、ブラウザの中で音を合成して流す）=====
+// 曲調ごとに、テンポ・和音（MIDI 番号）・音色・リズムを決めておき、16 分音符ごとに音を組み立てる
+const BGM_STYLES = {
+  synthwave: { label: "シンセウェーブ", bpm: 96, swing: 0, chords: [[57, 60, 64, 67], [53, 57, 60, 64], [48, 52, 55, 60], [55, 59, 62, 67]],
+    pad: "sawtooth", padCut: 1100, arp: "16", arpWave: "triangle", drums: "synth", bass: "sawtooth" },
+  lofi: { label: "ローファイ", bpm: 74, swing: 0.18, chords: [[53, 57, 60, 64], [52, 55, 59, 62], [50, 53, 57, 60], [48, 52, 55, 59]],
+    pad: "keys", arp: "none", drums: "lofi", bass: "sine", noise: "vinyl" },
+  ambient: { label: "アンビエント", bpm: 56, swing: 0, chords: [[48, 55, 62, 66], [50, 57, 62, 69], [45, 52, 59, 64], [47, 54, 59, 66]],
+    pad: "triangle", padCut: 1600, arp: "bells", drums: "none", bass: "sine" },
+  bright: { label: "さわやか", bpm: 100, swing: 0, chords: [[48, 55, 60, 64], [43, 50, 59, 62], [45, 52, 57, 60], [41, 48, 57, 60]],
+    pad: "triangle", padCut: 2400, arp: "8", arpWave: "square", drums: "light", bass: "triangle" },
+  rain: { label: "雨とピアノ", bpm: 66, swing: 0, chords: [[45, 52, 55, 60], [41, 48, 52, 57], [48, 52, 55, 59], [40, 47, 50, 55]],
+    pad: "keys", arp: "piano", drums: "none", bass: "sine", noise: "rain" },
+};
+const SCENE_STYLE = { cyber: "synthwave", city: "lofi", space: "ambient", sky: "bright", rain: "rain" };
+const bgm = { ctx: null, out: null, bus: null, delay: null, verb: null, noiseBuf: null, noiseSrc: null,
+  timer: null, playing: false, style: "auto", cur: null, pending: null, step: 0, nextTime: 0 };
+const bgmFreq = (m) => 440 * Math.pow(2, (m - 69) / 12);
+function bgmEnsure() {
+  if (bgm.ctx) return bgm.ctx;
+  const AC = window.AudioContext || window.webkitAudioContext;
+  if (!AC) return null;
+  const ctx = new AC();
+  bgm.ctx = ctx;
+  bgm.out = ctx.createGain();
+  bgm.out.gain.value = 0;
+  const comp = ctx.createDynamicsCompressor();
+  comp.threshold.value = -18; comp.ratio.value = 3;
+  bgm.out.connect(comp).connect(ctx.destination);
+  bgm.bus = ctx.createGain();
+  bgm.bus.connect(bgm.out);
+  // こだま（ディレイ）
+  const d = ctx.createDelay(1), fb = ctx.createGain(), wet = ctx.createGain();
+  d.delayTime.value = 0.375; fb.gain.value = 0.32; wet.gain.value = 0.35;
+  d.connect(fb).connect(d); d.connect(wet).connect(bgm.out);
+  bgm.delay = d;
+  // 残響（ノイズから作った響き）
+  const len = Math.floor(ctx.sampleRate * 2.6), ir = ctx.createBuffer(2, len, ctx.sampleRate);
+  for (let ch = 0; ch < 2; ch++) {
+    const a = ir.getChannelData(ch);
+    for (let i = 0; i < len; i++) a[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / len, 2.4);
+  }
+  const cv = ctx.createConvolver(), vg = ctx.createGain();
+  cv.buffer = ir; vg.gain.value = 0.5;
+  cv.connect(vg).connect(bgm.out);
+  bgm.verb = cv;
+  const nb = ctx.createBuffer(1, ctx.sampleRate * 2, ctx.sampleRate), nd = nb.getChannelData(0);
+  for (let i = 0; i < nd.length; i++) nd[i] = Math.random() * 2 - 1;
+  bgm.noiseBuf = nb;
+  return ctx;
+}
+function bgmSend(node, delay = 0, verb = 0.3) {
+  node.connect(bgm.bus);
+  if (delay) { const g = bgm.ctx.createGain(); g.gain.value = delay; node.connect(g).connect(bgm.delay); }
+  if (verb) { const g = bgm.ctx.createGain(); g.gain.value = verb; node.connect(g).connect(bgm.verb); }
+}
+function bgmTone(t, midi, dur, { wave = "sine", vol = 0.1, attack = 0.01, release = 0.3, cut = 0, detune = 0, delay = 0, verb = 0.3 } = {}) {
+  const ctx = bgm.ctx, o = ctx.createOscillator(), g = ctx.createGain();
+  o.type = wave; o.frequency.value = bgmFreq(midi); o.detune.value = detune;
+  const hold = Math.max(attack, dur);
+  g.gain.setValueAtTime(0, t);
+  g.gain.linearRampToValueAtTime(vol, t + attack);
+  g.gain.setTargetAtTime(0, t + hold, release / 3);
+  o.connect(g);
+  let last = g;
+  if (cut) { const f = ctx.createBiquadFilter(); f.type = "lowpass"; f.frequency.value = cut; g.connect(f); last = f; }
+  bgmSend(last, delay, verb);
+  o.start(t); o.stop(t + hold + release + 0.1);
+}
+function bgmNoise(t, dur, { vol = 0.05, type = "highpass", freq = 7000, q = 0.7, verb = 0 } = {}) {
+  const ctx = bgm.ctx, src = ctx.createBufferSource(), f = ctx.createBiquadFilter(), g = ctx.createGain();
+  src.buffer = bgm.noiseBuf; f.type = type; f.frequency.value = freq; f.Q.value = q;
+  g.gain.setValueAtTime(vol, t); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+  src.connect(f).connect(g);
+  bgmSend(g, 0, verb);
+  src.start(t, Math.random()); src.stop(t + dur + 0.05);
+}
+function bgmKick(t, vol = 0.5) {
+  const ctx = bgm.ctx, o = ctx.createOscillator(), g = ctx.createGain();
+  o.frequency.setValueAtTime(140, t); o.frequency.exponentialRampToValueAtTime(42, t + 0.18);
+  g.gain.setValueAtTime(vol, t); g.gain.exponentialRampToValueAtTime(0.0001, t + 0.35);
+  o.connect(g); bgmSend(g, 0, 0);
+  o.start(t); o.stop(t + 0.4);
+}
+// 1 拍を 4 つに分けた 16 分音符ごとに呼ばれ、その瞬間に鳴らす音を予約する
+function bgmStep(t, s) {
+  const st = bgm.cur, bar = Math.floor(s / 16), i = s % 16;
+  const ch = st.chords[bar % st.chords.length];
+  const beat = 60 / st.bpm, six = beat / 4, barLen = beat * 4;
+  if (i === 0) {
+    if (st.pad === "keys") {
+      // エレピ風：やわらかく和音を置く
+      ch.forEach((n, k) => bgmTone(t + k * 0.015, n, barLen * 0.85, { wave: "sine", vol: 0.05, release: 1.2, verb: 0.4 }));
+      ch.forEach((n) => bgmTone(t, n + 12, barLen * 0.4, { wave: "triangle", vol: 0.01, release: 0.8, verb: 0.3 }));
+    } else {
+      ch.forEach((n, k) => bgmTone(t, n, barLen, { wave: st.pad, vol: 0.022, attack: barLen * 0.35, release: barLen * 0.5, cut: st.padCut, detune: k % 2 ? 7 : -7, verb: 0.5 }));
+    }
+    bgmTone(t, ch[0] - 12, barLen * 0.45, { wave: st.bass, vol: st.bass === "sawtooth" ? 0.05 : 0.12, attack: 0.02, cut: 600, verb: 0 });
+  }
+  if (st.drums === "synth" && i === 8) bgmTone(t, ch[0] - 12, barLen * 0.2, { wave: st.bass, vol: 0.04, cut: 500, verb: 0 });
+  // 分散和音・ベル・ピアノ
+  if (st.arp === "16" || (st.arp === "8" && i % 2 === 0)) {
+    const n = ch[Math.floor(i / (st.arp === "8" ? 2 : 1)) % ch.length] + 12;
+    bgmTone(t, n, six * 0.8, { wave: st.arpWave, vol: st.arpWave === "square" ? 0.012 : 0.025, attack: 0.005, release: 0.15, cut: 2800, delay: 0.35, verb: 0.25 });
+  }
+  if (st.arp === "bells" && Math.random() < 0.12) {
+    bgmTone(t, ch[Math.floor(Math.random() * ch.length)] + 24, 0.1, { vol: 0.03, release: 2.5, delay: 0.5, verb: 0.6 });
+  }
+  if (st.arp === "piano") {
+    const at = [0, 6, 10, 12].indexOf(i);
+    if (at >= 0) bgmTone(t, ch[[0, 2, 1, 3][at]] + 12, 0.2, { wave: "triangle", vol: 0.04, release: 1.6, delay: 0.2, verb: 0.5 });
+  }
+  // リズム
+  if (st.drums === "synth") {
+    if (i % 4 === 0) bgmKick(t, 0.35);
+    if (i === 4 || i === 12) bgmNoise(t, 0.18, { vol: 0.06, type: "bandpass", freq: 1800, q: 0.8, verb: 0.2 });
+    if (i % 2 === 0) bgmNoise(t, 0.04, { vol: 0.018 });
+  } else if (st.drums === "lofi") {
+    if (i === 0 || i === 10) bgmKick(t, 0.32);
+    if (i === 4 || i === 12) bgmNoise(t, 0.2, { vol: 0.05, type: "bandpass", freq: 1400, q: 0.6, verb: 0.15 });
+    if (i % 2 === 0) bgmNoise(t, 0.03, { vol: i % 4 ? 0.01 : 0.016 });
+    if (Math.random() < 0.08) bgmNoise(t, 0.01, { vol: 0.03, freq: 3000 }); // レコードのプチッという音
+  } else if (st.drums === "light") {
+    if (i === 0) bgmKick(t, 0.22);
+    if (i % 4 === 2) bgmNoise(t, 0.05, { vol: 0.014, freq: 6000 });
+  }
+}
+// 雨音・レコードのノイズ（ずっと鳴らす）
+function bgmApplyNoise() {
+  if (bgm.noiseSrc) { try { bgm.noiseSrc.stop(); } catch {} bgm.noiseSrc = null; }
+  const kind = bgm.cur?.noise;
+  if (!kind) return;
+  const ctx = bgm.ctx, src = ctx.createBufferSource(), f = ctx.createBiquadFilter(), g = ctx.createGain();
+  src.buffer = bgm.noiseBuf; src.loop = true;
+  if (kind === "rain") { f.type = "bandpass"; f.frequency.value = 2500; f.Q.value = 0.4; g.gain.value = 0.05; }
+  else { f.type = "highpass"; f.frequency.value = 3000; g.gain.value = 0.01; }
+  src.connect(f).connect(g).connect(bgm.bus);
+  src.start();
+  bgm.noiseSrc = src;
+}
+function bgmTick() {
+  const ctx = bgm.ctx;
+  if (!ctx || !bgm.playing) return;
+  while (bgm.nextTime < ctx.currentTime + 0.15) {
+    const i = bgm.step % 16;
+    if (bgm.pending && i === 0) { bgm.cur = bgm.pending; bgm.pending = null; bgmApplyNoise(); } // 曲調の切り替えは小節の頭で
+    const six = 60 / bgm.cur.bpm / 4;
+    bgmStep(bgm.nextTime + (bgm.cur.swing && i % 2 ? six * bgm.cur.swing : 0), bgm.step);
+    bgm.nextTime += six;
+    bgm.step++;
+  }
+}
+function bgmResolveStyle() {
+  const want = bgm.style === "auto" ? SCENE_STYLE[(window.__pallasSceneId || "cyber").split(":")[0]] : bgm.style;
+  return BGM_STYLES[want] ? want : "synthwave";
+}
+function bgmLevel() { return Math.max(0, Math.min(100, settings.bgmVolume ?? 40)) / 100 * 0.6; }
+// パラスが話すときは小さく、聞き取り中は止める（マイクに音楽が入らないように。iPhone・iPad は音を鳴らしているとマイクが使えない）
+function bgmUpdateGain() {
+  if (!bgm.ctx) return;
+  const st = document.body.dataset.state;
+  const target = !bgm.playing ? 0 : st === "speaking" ? bgmLevel() * 0.35 : bgmLevel();
+  bgm.out.gain.setTargetAtTime(target, bgm.ctx.currentTime, 0.25);
+  if (st === "listening") { if (bgm.ctx.state === "running") bgm.ctx.suspend().catch(() => {}); }
+  else if (bgm.playing && bgm.ctx.state === "suspended") bgm.ctx.resume().catch(() => {});
+}
+function renderBgmBtn() {
+  const b = $("bgmBtn");
+  if (!b) return;
+  b.classList.toggle("on", bgm.playing);
+  b.setAttribute("aria-pressed", String(bgm.playing));
+  b.title = bgm.playing ? `BGM を止める（${bgm.cur?.label || ""}）` : "BGM を流す";
+}
+function bgmPlay(style) {
+  if (style) bgm.style = style;
+  const ctx = bgmEnsure();
+  if (!ctx) return false;
+  const st = BGM_STYLES[bgmResolveStyle()];
+  if (!bgm.playing) {
+    bgm.cur = st; bgm.pending = null; bgm.step = 0;
+    bgm.nextTime = ctx.currentTime + 0.1;
+    bgm.playing = true;
+    bgmApplyNoise();
+    clearInterval(bgm.timer);
+    bgm.timer = setInterval(bgmTick, 25);
+  } else if (st !== bgm.cur) bgm.pending = st;
+  if (document.body.dataset.state !== "listening") ctx.resume().catch(() => {});
+  bgmUpdateGain();
+  renderBgmBtn();
+  return true;
+}
+function bgmStop() {
+  bgm.playing = false;
+  clearInterval(bgm.timer); bgm.timer = null;
+  if (bgm.ctx) {
+    bgm.out.gain.setTargetAtTime(0, bgm.ctx.currentTime, 0.3);
+    setTimeout(() => {
+      if (bgm.playing) return;
+      if (bgm.noiseSrc) { try { bgm.noiseSrc.stop(); } catch {} bgm.noiseSrc = null; }
+      bgm.ctx.suspend().catch(() => {});
+    }, 1500);
+  }
+  renderBgmBtn();
+}
+function saveBgmSettings() { store.set("pallas.settings", settings); }
+async function musicTool(input) {
+  const action = input?.action;
+  if (typeof input?.volume === "number" && isFinite(input.volume)) {
+    settings.bgmVolume = Math.round(Math.max(0, Math.min(100, input.volume)));
+  }
+  if (action === "stop") {
+    bgmStop(); settings.bgmOn = false; saveBgmSettings();
+    return { result: "BGM を止めた" };
+  }
+  if (action === "volume") {
+    bgmUpdateGain(); saveBgmSettings();
+    return { result: `音量を ${settings.bgmVolume ?? 40} にした${bgm.playing ? "" : "（BGM は今は止まっている）"}` };
+  }
+  if (input?.style && BGM_STYLES[input.style] || input?.style === "auto") settings.bgmStyle = input.style;
+  if (!bgmPlay(settings.bgmStyle || "auto")) return { error: "この端末では BGM を流せない" };
+  settings.bgmOn = true; saveBgmSettings();
+  const label = BGM_STYLES[bgmResolveStyle()].label;
+  return { result: `BGM（${label}${bgm.style === "auto" ? "・景色に合わせる" : ""}）を流し始めた。音量 ${settings.bgmVolume ?? 40}${bgm.ctx.state === "suspended" ? "。鳴らないときは画面を一度タップすると鳴る" : ""}` };
+}
+// 状態（話す・聞く）が変わったら音量を合わせる
+new MutationObserver(bgmUpdateGain).observe(document.body, { attributes: true, attributeFilter: ["data-state"] });
+// 景色が変わったら、おまかせのときは曲調も変える
+window.addEventListener("pallas:scene", () => {
+  if (!bgm.playing || bgm.style !== "auto") return;
+  const st = BGM_STYLES[bgmResolveStyle()];
+  if (st !== bgm.cur) bgm.pending = st;
+});
+// ブラウザは、画面に触れるまで音を出せない。前回 BGM をつけていたら、最初のタップで流し始める
+const bgmUnlock = () => {
+  if (settings.bgmOn && !bgm.playing) bgmPlay(settings.bgmStyle || "auto");
+  else if (bgm.playing && bgm.ctx?.state === "suspended" && document.body.dataset.state !== "listening") bgm.ctx.resume().catch(() => {});
+};
+document.addEventListener("pointerdown", bgmUnlock, { passive: true });
+document.addEventListener("keydown", bgmUnlock);
+$("bgmBtn").addEventListener("click", () => {
+  if (bgm.playing) { bgmStop(); settings.bgmOn = false; }
+  else { bgmPlay(settings.bgmStyle || "auto"); settings.bgmOn = true; }
+  saveBgmSettings();
+});
 
 // ===== 知識（RAG） =====
 // 公開時に GitHub Actions が knowledge/ の資料から作った索引（knowledge-index.json）を読み、
@@ -2186,6 +2470,7 @@ const PLACE_NAMES = {
 
 // 道具を実行して結果の文字列を返す（入力は念のため自分でも検証する）
 async function runTool(name, input) {
+  if (name === "music") return musicTool(input);
   if (name === "calendar_list_events") return calendarList(input);
   if (name === "calendar_add_event") return calendarAdd(input);
   if (name === "calendar_delete_event") return calendarDelete(input);
@@ -3424,6 +3709,9 @@ function syncSettingsForm() {
   $("fishApiKey").value = settings.fishApiKey;
   updateVoiceFields();
   $("rateVal").textContent = `×${Number(settings.rate).toFixed(2)}`;
+  $("bgmStyle").value = settings.bgmStyle || "auto";
+  $("bgmVolume").value = String(settings.bgmVolume ?? 40);
+  $("bgmVolVal").textContent = `${settings.bgmVolume ?? 40}`;
   $("pitchVal").textContent = Number(settings.pitch).toFixed(2);
   loadVoices();
 }
@@ -3522,6 +3810,10 @@ $("clearMemoriesBtn").addEventListener("click", () => {
 $("settingsBtn").addEventListener("click", () => {
   renderMemoryList(); syncSettingsForm(); $("settings").showModal(); });
 $("rate").addEventListener("input", (e) => $("rateVal").textContent = `×${Number(e.target.value).toFixed(2)}`);
+$("bgmVolume").addEventListener("input", (e) => {
+  $("bgmVolVal").textContent = e.target.value;
+  settings.bgmVolume = Number(e.target.value); bgmUpdateGain(); // 動かしながら音量を確かめられる
+});
 $("pitch").addEventListener("input", (e) => $("pitchVal").textContent = Number(e.target.value).toFixed(2));
 function readVoiceForm() {
   return {
@@ -3583,6 +3875,12 @@ $("settingsForm").addEventListener("submit", () => {
   if (settings.googleMapsKey !== $("googleMapsKey").value.trim()) gmapsReady = null; // キーが変わったら読み込み直す
   settings.googleMapsKey = $("googleMapsKey").value.trim();
   settings.morningGreeting = $("morningGreeting").checked;
+  settings.bgmVolume = Number($("bgmVolume").value);
+  if (settings.bgmStyle !== $("bgmStyle").value) {
+    settings.bgmStyle = $("bgmStyle").value;
+    if (bgm.playing) bgmPlay(settings.bgmStyle);
+  }
+  bgmUpdateGain();
   renderMorningChip();
   fishErrorShown = false;
   store.set("pallas.settings", settings);
