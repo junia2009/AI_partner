@@ -4479,7 +4479,7 @@ if (!Recognition) {
         const bw = 30 + R() * 90, bh = h * (0.15 + R() * 0.45), top = h * 0.95 - bh;
         s.fillStyle = `rgb(${10 + R() * 10},${16 + R() * 10},${30 + R() * 14})`; s.fillRect(x, top, bw, h);
         for (let wy = top + 8; wy < h; wy += 10) for (let wx = x + 5; wx < x + bw - 5; wx += 9) {
-          if (R() < 0.3) { s.fillStyle = R() < 0.7 ? "rgba(255,200,130,0.8)" : "rgba(150,200,255,0.8)"; s.fillRect(wx, wy, 4, 5); }
+          if (R() < 0.3) { s.fillStyle = R() < 0.75 ? "rgba(230,195,150,0.7)" : "rgba(175,200,230,0.6)"; s.fillRect(wx, wy, 4, 5); }
         }
         x += bw + R() * 20;
       }
@@ -4495,9 +4495,10 @@ if (!Recognition) {
       b.drawImage(sC, 0, 0, w, h); // 少しだけ元の灯りの粒を残す
       b.globalAlpha = 1;
       // 光のボケ（街灯・車・信号）
-      for (let i = 0; i < 45; i++) {
-        const col = R() < 0.55 ? "255,196,140" : R() < 0.6 ? "130,180,255" : R() < 0.5 ? "255,110,100" : "150,240,190";
-        const r = 5 + Math.pow(R(), 2.2) * 38, bx = R() * w, by = h * (0.35 + R() * 0.65), a = 0.08 + R() * 0.16;
+      // 色はしぼって、落ち着いた電球色と青白い光だけにする
+      for (let i = 0; i < 38; i++) {
+        const col = R() < 0.65 ? "230,190,145" : "170,195,225";
+        const r = 5 + Math.pow(R(), 2.2) * 34, bx = R() * w, by = h * (0.35 + R() * 0.65), a = 0.06 + R() * 0.11;
         const g = b.createRadialGradient(bx, by, 0, bx, by, r);
         g.addColorStop(0, `rgba(${col},${a * 0.7})`); g.addColorStop(0.8, `rgba(${col},${a})`); g.addColorStop(1, `rgba(${col},0)`);
         b.fillStyle = g; b.beginPath(); b.arc(bx, by, r, 0, Math.PI * 2); b.fill();
