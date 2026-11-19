@@ -112,8 +112,6 @@
   body[data-state="thinking"] .brand::before { background: var(--accent-2); box-shadow: 0 0 8px var(--accent-2); animation-duration: .6s; }
   @keyframes blinkDot { 50% { opacity: .3; } }
   .head-actions { display: flex; gap: 6px; }
-  .bgm-btn { min-width: 40px; }
-  .bgm-btn.on { color: var(--accent); border-color: var(--accent); box-shadow: 0 0 10px rgba(124,196,255,.35); }
   .icon-btn {
     background: rgba(18,24,38,.5); backdrop-filter: blur(6px); border: 1px solid var(--line); border-radius: 10px;
     padding: 6px 10px; font-size: 13px; color: var(--muted);
@@ -398,7 +396,6 @@
     <button class="icon-btn" id="installBtn" title="ホーム画面にアプリとして追加" hidden>アプリに追加</button>
     <select class="icon-btn model-select" id="modelSelect" title="パラスの頭脳（モデル）" aria-label="モデル"></select>
     <button class="icon-btn" id="newChatBtn" title="会話をリセット">新しい会話</button>
-    <button class="icon-btn bgm-btn" id="bgmBtn" title="BGM を流す" aria-pressed="false">♪</button>
     <button class="icon-btn" id="settingsBtn" title="設定">設定</button>
   </div>
 </header>
@@ -529,7 +526,7 @@
     <div class="field">
       <label for="bgmVolume">BGM の音量 <span id="bgmVolVal"></span></label>
       <input id="bgmVolume" type="range" min="0" max="100" step="5">
-      <p class="hint">右上の ♪ ボタンか、「BGM流して」「音楽止めて」で操作できます。パラスが話すときは小さくなり、聞き取り中は止まります。</p>
+      <p class="hint">パラスに「BGM流して」「音楽止めて」「落ち着く曲にして」と話しかけて操作します。パラスが話すときは小さくなり、聞き取り中は止まります。</p>
     </div>
     <div class="field">
       <label for="rate">話す速さ <span id="rateVal"></span></label>
@@ -1230,13 +1227,6 @@ function bgmUpdateGain() {
   if (st === "listening") { if (bgm.ctx.state === "running") bgm.ctx.suspend().catch(() => {}); }
   else if (bgm.playing && bgm.ctx.state === "suspended") bgm.ctx.resume().catch(() => {});
 }
-function renderBgmBtn() {
-  const b = $("bgmBtn");
-  if (!b) return;
-  b.classList.toggle("on", bgm.playing);
-  b.setAttribute("aria-pressed", String(bgm.playing));
-  b.title = bgm.playing ? `BGM を止める（${bgm.cur?.label || ""}）` : "BGM を流す";
-}
 function bgmPlay(style) {
   if (style) bgm.style = style;
   const ctx = bgmEnsure();
@@ -1252,7 +1242,6 @@ function bgmPlay(style) {
   } else if (st !== bgm.cur) bgm.pending = st;
   if (document.body.dataset.state !== "listening") ctx.resume().catch(() => {});
   bgmUpdateGain();
-  renderBgmBtn();
   return true;
 }
 function bgmStop() {
@@ -1266,7 +1255,6 @@ function bgmStop() {
       bgm.ctx.suspend().catch(() => {});
     }, 1500);
   }
-  renderBgmBtn();
 }
 function saveBgmSettings() { store.set("pallas.settings", settings); }
 async function musicTool(input) {
@@ -1303,11 +1291,7 @@ const bgmUnlock = () => {
 };
 document.addEventListener("pointerdown", bgmUnlock, { passive: true });
 document.addEventListener("keydown", bgmUnlock);
-$("bgmBtn").addEventListener("click", () => {
-  if (bgm.playing) { bgmStop(); settings.bgmOn = false; }
-  else { bgmPlay(settings.bgmStyle || "auto"); settings.bgmOn = true; }
-  saveBgmSettings();
-});
+
 
 // ===== 知識（RAG） =====
 // 公開時に GitHub Actions が knowledge/ の資料から作った索引（knowledge-index.json）を読み、
