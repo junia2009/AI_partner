@@ -650,7 +650,7 @@ const PALLAS_SYSTEM_PROMPT = `あなたは「パラス」。マスター専属�
 
 # 補足
 - ユーザーの発言の先頭には [現在日時: ...] が付きます。これはアプリが自動で付けている情報なので、時間帯や曜日を踏まえた気遣いや先回りに使ってください。読み上げたり言及したりする必要はありません。
-- ユーザーの発言は音声認識の結果なので、誤変換が混じることがあります。文脈から意図を汲み取ってください。
+- ユーザーの発言は音声認識の結果なので、誤変換が混じることがあります。文脈から意図を汲み取ってください。特に「プラス」「バラス」は、あなたの名前「パラス」の聞き間違いであることが多いです。
 - 内部用やシステム用のXMLタグは返答に含めないでください。
 - ツール（記憶・タイマー・移動など）を使うときは、返事の言葉は一度だけにします。ツールの前に「星空へ行きましょう」と言ったなら、ツールのあとで同じことを言い直さず、そのまま終えます。ツールの前に何も言っていなければ、ツールのあとに短く一言だけ伝えます。
 - ツールの結果の文言を、そのまま読み上げたり言い換えて繰り返したりしません。
@@ -2639,6 +2639,22 @@ let recogEndAt = 0;       // 音声認識が終わった時刻
 let recognition = null;
 let listening = false;
 let interimEl = null;
+// 音声認識は「パラス」を「プラス」「バラス」などと聞き間違えやすい。
+// 呼びかけとして使われているときだけ「パラス」に直す（「プラスに考える」「1プラス2」などは直さない）
+const NAME_MISHEARD = "(?:プラス|ぷらす|バラス|ばらす|パラス|ぱらす|パラズ|プラズ|ブラス|ぶらす|パルス|ぱるす|pallas|palace|plus)";
+const NAME_AFTER = "(?=[、,。．.！!？?\\s]|って|は|ちゃん|さん|くん|$)";
+function fixCallName(text) {
+  let t = String(text || "");
+  // 文の頭（「ねえ」「おい」などの呼びかけのあとも含む）
+  t = t.replace(new RegExp(`^((?:ねえ|ねぇ|ねー|おい|ヘイ|hey|やあ|よう)?[、,\\s]*)${NAME_MISHEARD}${NAME_AFTER}`, "i"), "$1パラス");
+  // 文の頭で、すぐ漢字が続くとき（「プラス今日の予定は？」）。「プラス思考」などの言葉は除く
+  t = t.replace(new RegExp(`^${NAME_MISHEARD}(?=[\\u4e00-\\u9fff])(?!思考|面|要素|要因|方向|効果|材料|評価|成長|収支|値|極|記号|料金|分|円|査定|α)`, "i"), "パラス");
+  // 文の途中の呼びかけ（「ねえプラス」「ありがとうプラス」）
+  t = t.replace(new RegExp(`((?:ねえ|ねぇ|おい|ヘイ|ありがとう|ありがと|おはよう|こんにちは|こんばんは|おやすみ)[、,\\s]*)${NAME_MISHEARD}${NAME_AFTER}`, "gi"), "$1パラス");
+  // 文の終わりの呼びかけ（「〜してよ、プラス」）
+  t = t.replace(new RegExp(`([、,]\\s*)${NAME_MISHEARD}(?=[。．.！!？?]?$)`, "i"), "$1パラス");
+  return t;
+}
 
 // 音声認識の状態。listening は「マイクが実際に聞いている」、recogActive は「開始してから終わるまで」
 let recogActive = false;
@@ -2724,7 +2740,7 @@ function startListening({ auto = false } = {}) {
     interimEl = null;
     recogEndAt = performance.now();
     // 途中で止めた場合、最後の部分が「確定前」のまま残ることがあるので、それも使う
-    const text = (finalText + latestInterim).trim();
+    const text = fixCallName((finalText + latestInterim).trim());
     if (text) { send(text); return; }
     setState("idle", "マイクを押して話しかけてください");
     // 連続会話で自動的に聞き始めたときは、黙っていても何も言わずに待機へ戻る
@@ -2771,7 +2787,7 @@ function startListening({ auto = false } = {}) {
     lastSpeechAt = performance.now();
     clearTimeout(silenceTimer);
     silenceTimer = setTimeout(requestStop, SILENCE_MS);
-    const shown = finalText + interim;
+    const shown = fixCallName(finalText + interim);
     if (!interimEl) interimEl = addMsg("user interim", shown);
     else interimEl.textContent = shown;
     $("log").scrollTop = $("log").scrollHeight;
@@ -2876,7 +2892,7 @@ async function startFishListening({ auto = false } = {}) {
       pending.remove();
       endSession();
       recogEndAt = performance.now();
-      if (text) send(text);
+      if (text) send(fixCallName(text));
       else { setState("idle", "マイクを押して話しかけてください"); addMsg("system", "声が聞き取れませんでした。もう一度話しかけてください。"); }
     } catch (err) {
       pending.remove();
