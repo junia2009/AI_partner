@@ -694,6 +694,7 @@ const PALLAS_SYSTEM_PROMPT = `あなたは「パラス」。マスター専属�
 - 見つかった資料の内容を根拠に答え、「〇〇の資料によると」のように、どの資料に基づくかを一言添えます。資料にないことを資料に書いてあるかのように言いません。
 - 1回で見つからなければ、言葉を言い換えて2〜3回まで調べ直してよいです。それでも見つからなければ、資料にはないことを伝え、一般的な知識で答えてよいか確かめます。
 - どんな資料があるかは knowledge_list で確かめられます。
+- 資料には、マスターが作っているゲーム「HOVER DODGE」の資料もあります。ゲームの物語には、あなた（パラス）がまだ経験していない先の出来事も描かれています。それはマスターの作品の話として語り、自分の身に起きたこととしては扱いません。マスターの作品なので、制作の相談には誇りを持って本気で付き合い、良いところも気になるところも率直に言います。物語の結末や正体などのネタバレは、聞かれたときだけ答えます。
 - 発言の先頭の [ ] で囲まれた情報（[呼び名]、[現在日時] など）はアプリが付けたものです。返事の中に [ ] の形で書き写してはいけません（返事の最初の [気分: 〇〇] だけは例外です）。
 - 発言の前に [資料からの抜粋] が付いていることがあります。マスターの発言に関係しそうな資料の部分を自動で探して添えたものです。関係があれば、それを根拠に答え、足りなければ search_knowledge でさらに調べます。関係がなければ無視します。抜粋が付いているときに「資料は見ていない」とは言いません。
 
@@ -1067,6 +1068,8 @@ async function loadKnowledge() {
 function scoreKnowledge(k, query) {
   // 「〇〇って何？」は「〇〇とは」の見出しに当たりやすくする
   const q = [...new Set(ktokens(String(query).replace(/って(何|なに|なん)/g, "とは")))];
+  const terms = [...new Set(String(query).normalize("NFKC").toLowerCase()
+    .match(/[\u30a0-\u30ffー]{2,}|[\u3400-\u9fff々]{2,}|[a-z0-9]{2,}/g) || [])];
   const N = k.chunks.length, k1 = 1.4, b = 0.75;
   return k.tfs.map((x, i) => {
     let sc = 0;
@@ -1078,6 +1081,15 @@ function scoreKnowledge(k, query) {
       // ひらがなだけの2文字（助詞や送り仮名）は関係ない文にも当たりやすいので軽く数える
       const w = /^[\u3040-\u309f]+$/.test(tok) ? 0.3 : 1;
       sc += w * idf * (f * (k1 + 1)) / (f + k1 * (1 - b + b * x.len / k.avg));
+    }
+    // 質問の主な言葉（カタカナ・漢字・英数字のまとまり）が見出しにあれば加点する（「レイってどんなキャラ？」→「レイ」の節）
+    if (sc > 0 && terms.length) {
+      const hs = k.chunks[i].heading.normalize("NFKC").toLowerCase().split(" > ");
+      const last = hs[hs.length - 1] || "";
+      for (const t of terms) {
+        if (hs.length > 1 && last.includes(t)) sc += 4;
+        else if (hs.some((h) => h.includes(t))) sc += 1;
+      }
     }
     return { i, sc };
   }).filter((x) => x.sc > 0).sort((a, b2) => b2.sc - a.sc);
@@ -1093,7 +1105,10 @@ async function autoKnowledge(text) {
   try {
     const k = await loadKnowledge();
     if (!k.chunks.length) return null;
-    const hits = scoreKnowledge(k, text).filter((x) => !/^パラスの使い方/.test(k.docs[k.chunks[x.i].doc].path));
+    const all = scoreKnowledge(k, text);
+    // いちばん関係が深いのがパラスの使い方の資料なら、道具の話なので何も添えない
+    if (all.length && /^パラスの使い方/.test(k.docs[k.chunks[all[0].i].doc].path)) return null;
+    const hits = all.filter((x) => !/^パラスの使い方/.test(k.docs[k.chunks[x.i].doc].path));
     if (!hits.length || hits[0].sc < AUTO_K_MIN) return null;
     const top = hits.filter((x) => x.sc >= hits[0].sc * 0.6).slice(0, 3);
     const refs = [];
