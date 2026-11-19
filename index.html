@@ -1461,16 +1461,21 @@ async function gmailDraft(input) {
 
 // --- Google マップ ---
 let turnPlaces = []; // この返事で見つけた場所（吹き出しの下に地図リンクを出す）
-function currentPosition() {
+// precise: 経路案内のときは GPS も使って正確に取る（大まかな位置だと、遠回りや何時間もの経路になる）
+function currentPosition({ precise = false } = {}) {
   return new Promise((resolve) => {
     if (!navigator.geolocation) return resolve(null);
     navigator.geolocation.getCurrentPosition(
-      (p) => resolve({ lat: p.coords.latitude, lng: p.coords.longitude }),
+      (p) => resolve({ lat: p.coords.latitude, lng: p.coords.longitude, accuracy: p.coords.accuracy }),
       () => resolve(null),
-      { enableHighAccuracy: false, timeout: 8000, maximumAge: 300000 },
+      precise
+        ? { enableHighAccuracy: true, timeout: 12000, maximumAge: 30000 }
+        : { enableHighAccuracy: false, timeout: 8000, maximumAge: 300000 },
     );
   });
 }
+// 最近の検索で見つけた場所（「そこへの行き方」で、同じ名前の遠くの場所と取り違えないため）
+let recentPlaces = [];
 function distanceM(a, b) {
   const R = 6371000, rad = Math.PI / 180;
   const dLat = (b.lat - a.lat) * rad, dLng = (b.lng - a.lng) * rad;
@@ -1489,6 +1494,7 @@ async function mapsSearch(input) {
     const places = data.places || [];
     if (!places.length) return { result: "見つかりませんでした" };
     turnPlaces.push(...places);
+    recentPlaces = [...places, ...recentPlaces].slice(0, 20);
     showPlacesPanel(query, places, pos);
     const note = input.near_me !== false && !pos ? "（現在地を使えなかったため、場所の指定なしで検索）\n" : "";
     return {
@@ -1554,18 +1560,37 @@ function routeLegs(route) {
   return legs;
 }
 function timeOf(iso) { const d = iso ? new Date(iso) : null; return d && !isNaN(d) ? hhmm(d) : ""; }
+// 目的地の名前を、現在地の近くを優先して実際の場所（緯度経度）に直す。
+// 名前のまま経路を探すと、同じ名前の遠くの店や駅に決まってしまうことがある
+async function resolveDestination(text, near) {
+  const norm = (t) => String(t || "").normalize("NFKC").replace(/\s+/g, "").toLowerCase();
+  const q = norm(text);
+  const known = recentPlaces.find((p) => p.lat != null && q && (norm(p.name) === q || norm(p.name).includes(q) || q.includes(norm(p.name))));
+  if (known) return known;
+  try {
+    const data = await relayPost("/maps/search", { query: text, ...(near ? { lat: near.lat, lng: near.lng } : {}) });
+    const hit = (data.places || []).find((p) => p.lat != null);
+    if (hit) return hit;
+  } catch {}
+  return null;
+}
 async function mapsDirections(input, { fromCard = false } = {}) {
   const destText = typeof input?.destination === "string" ? input.destination.trim() : "";
-  const hasLL = typeof input?.dest_lat === "number" && typeof input?.dest_lng === "number";
+  let hasLL = typeof input?.dest_lat === "number" && typeof input?.dest_lng === "number";
   if (!destText && !hasLL) return { error: "destination が空です" };
-  const dest = hasLL ? { lat: input.dest_lat, lng: input.dest_lng } : destText;
   let origin = typeof input.origin === "string" && input.origin.trim() ? input.origin.trim() : null;
   let pos = null;
   if (!origin) {
-    pos = await currentPosition();
+    pos = await currentPosition({ precise: true });
     if (!pos) return { error: "現在地を取得できませんでした。端末の位置情報の許可を確認するか、出発地を教えてもらうよう伝えること" };
-    origin = pos;
+    origin = { lat: pos.lat, lng: pos.lng };
   }
+  let place = hasLL ? { name: destText, lat: input.dest_lat, lng: input.dest_lng, address: input.dest_address || "" } : null;
+  if (!place) {
+    place = await resolveDestination(destText, pos);
+    if (place) { hasLL = true; input = { ...input, dest_lat: place.lat, dest_lng: place.lng, dest_address: place.address || "" }; }
+  }
+  const dest = hasLL ? { lat: input.dest_lat, lng: input.dest_lng } : destText;
   const want = ["walk", "transit", "drive", "bicycle"].includes(input.mode) ? input.mode : "auto";
   let route = null, note = "";
   const tryRoute = (mode) => fetchRoute(origin, dest, mode, input).catch((e) => { if (e.status === 0 || e.status === 403 || e.status === 500) throw e; return null; });
@@ -1595,7 +1620,9 @@ async function mapsDirections(input, { fromCard = false } = {}) {
   }
   if (!route) return { error: "経路が見つかりませんでした。目的地の名前を詳しくするか、別の移動手段で試すこと" };
 
-  const destName = destText || "目的地";
+  const destName = destText || place?.name || "目的地";
+  const destPlace = place && place.name ? `${place.name}${place.address ? `（${place.address}）` : ""}` : "";
+  const roughPos = pos && pos.accuracy > 500 ? Math.round(pos.accuracy) : 0;
   const navDest = hasLL ? `${input.dest_lat},${input.dest_lng}` : destText;
   const arriveBy = input.arrive_by && !isNaN(Date.parse(input.arrive_by)) ? new Date(input.arrive_by) : null;
   const legs = routeLegs(route);
@@ -1605,7 +1632,7 @@ async function mapsDirections(input, { fromCard = false } = {}) {
   else if (input.depart_at && !isNaN(Date.parse(input.depart_at)) && Date.parse(input.depart_at) > Date.now()) start = new Date(input.depart_at);
   eta = eta || new Date(start.getTime() + route.seconds * 1000);
   const modeKey = route.key;
-  showRoutePanel({ destName, navDest, route, legs, modeKey, start, eta, note, pos, input });
+  showRoutePanel({ destName, destPlace, roughPos, navDest, route, legs, modeKey, start, eta, note, pos, input });
 
   if (fromCard) return null;
   const lines = [`${MODE_LABEL[modeKey]}で約${fmtDuration(route.seconds)}（${fmtDistance(route.meters)}）。${arriveBy && modeKey === "transit" ? `${hhmm(start)}ごろ出発` : `到着は${hhmm(eta)}ごろ`}`];
@@ -1616,6 +1643,8 @@ async function mapsDirections(input, { fromCard = false } = {}) {
     }
   }
   if (note) lines.push(note);
+  if (destPlace) lines.push(`目的地として使った場所：${destPlace}（違う場所なら、店名や地名を詳しく言ってもらう）`);
+  if (roughPos) lines.push(`現在地の精度が低い（誤差 約${roughPos}m）。時間がおかしければ、位置情報の「正確な位置情報」をオンにしてもらう`);
   lines.push("画面に経路の地図と「ナビ開始」ボタンを出した（押すと Google マップのナビが始まる）");
   return { result: lines.join("\n") };
 }
@@ -1626,7 +1655,7 @@ async function routeFromCard(input) {
   setState("idle", "マイクを押して話しかけてください");
   if (res?.error) addMsg("error", res.error.replace(/。?マスターに.*$|。?出発地を.*$|。?目的地の名前.*$/, "。"));
 }
-function showRoutePanel({ destName, navDest, route, legs, modeKey, start, eta, note, pos, input }) {
+function showRoutePanel({ destName, destPlace, roughPos, navDest, route, legs, modeKey, start, eta, note, pos, input }) {
   openInfoPanel(`🧭 ${destName}まで`, (body) => {
     // まとめ
     const sum = el("div", "info-item");
@@ -1636,6 +1665,8 @@ function showRoutePanel({ destName, navDest, route, legs, modeKey, start, eta, n
     row.appendChild(el("span", "big", `約${fmtDuration(route.seconds)}`));
     row.appendChild(el("span", "info-sub", `${MODE_LABEL[modeKey]} ・ ${fmtDistance(route.meters)} ・ ${hhmm(start)}発 → ${hhmm(eta)}着`));
     main.appendChild(row);
+    if (destPlace) main.appendChild(el("div", "info-sub", `📍 ${destPlace}`));
+    if (roughPos) main.appendChild(el("div", "info-sub", `⚠ 現在地が大まかです（誤差 約${fmtDistance(roughPos)}）。時間がおかしいときは、設定アプリで位置情報の「正確な位置情報」をオンにしてください。`));
     if (note) main.appendChild(el("div", "info-sub", note));
     const acts = el("div", "info-actions");
     const go = link("▶ ナビ開始", navUrl(navDest, modeKey));
@@ -1908,7 +1939,7 @@ function showPlacesPanel(query, places, pos) {
       if (pl.lat != null) {
         const go = el("button", "info-btn", "🧭 行き方");
         go.type = "button";
-        go.addEventListener("click", () => routeFromCard({ destination: pl.name, dest_lat: pl.lat, dest_lng: pl.lng }));
+        go.addEventListener("click", () => routeFromCard({ destination: pl.name, dest_lat: pl.lat, dest_lng: pl.lng, dest_address: pl.address }));
         acts.appendChild(go);
       }
       main.appendChild(acts);
