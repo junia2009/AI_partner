@@ -297,7 +297,18 @@
     width: min(520px, calc(100vw - 32px)); padding: 20px;
   }
   dialog::backdrop { background: rgba(0,0,0,.6); }
-  dialog h2 { margin: 0 0 14px; font-size: 17px; }
+  dialog h2 { margin: 0 0 12px; font-size: 17px; }
+  dialog { padding-top: 0; padding-bottom: 0; }
+  .set-head { position: sticky; top: 0; z-index: 2; background: var(--panel); padding-top: 18px; margin-bottom: 14px; }
+  .set-tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--line); overflow-x: auto; scrollbar-width: none; }
+  .set-tab { flex: 1 0 auto; background: transparent; border: none; border-bottom: 2px solid transparent; color: var(--muted); padding: 8px 10px; font: inherit; font-size: 14px; white-space: nowrap; }
+  .set-tab.on { color: var(--accent); border-bottom-color: var(--accent); font-weight: 600; }
+  .set-panel[hidden] { display: none; }
+  .set-sec { font-size: 12px; letter-spacing: .1em; color: var(--accent); margin: 20px 0 10px; padding-top: 12px; border-top: 1px solid var(--line); font-weight: 600; }
+  .set-panel > .set-sec:first-child { margin-top: 0; padding-top: 0; border-top: none; }
+  #testVoiceBtn { margin: -4px 0 4px; }
+  .stats-box { display: grid; grid-template-columns: auto 1fr; gap: 6px 12px; font-size: 14px; border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; }
+  .stats-box span:nth-child(even) { color: var(--accent); font-variant-numeric: tabular-nums; text-align: right; }
   .field { margin-bottom: 14px; }
   .field label { display: block; font-size: 13px; color: var(--muted); margin-bottom: 6px; }
   .field input[type=password], .field input[type=text], .field select {
@@ -368,7 +379,7 @@
   .places { margin-top: 8px; padding-top: 6px; border-top: 1px solid rgba(124,196,255,.15); font-size: 12px; color: var(--muted); line-height: 1.8; white-space: normal; }
   .places a { color: var(--accent); text-decoration: none; }
   .places a:hover { text-decoration: underline; }
-  .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 8px; }
+  .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 8px; position: sticky; bottom: 0; background: var(--panel); padding: 12px 0 18px; border-top: 1px solid var(--line); }
   .primary { background: var(--accent); color: #0b0f17; border: none; border-radius: 10px; padding: 9px 18px; font-weight: 600; }
   .ghost { background: transparent; border: 1px solid var(--line); border-radius: 10px; padding: 9px 14px; }
 </style>
@@ -448,124 +459,154 @@
 
 <dialog id="settings">
   <form method="dialog" id="settingsForm">
-    <h2>設定</h2>
-    <div class="field">
-      <label for="apiKey">Anthropic APIキー</label>
-      <input id="apiKey" type="password" placeholder="sk-ant-..." autocomplete="off">
-      <div class="hint">キーはこのブラウザの中（localStorage）にだけ保存され、Anthropic のAPIへ直接送られます。共有のパソコンでは使わないでください。</div>
-    </div>
-    <div class="field">
-      <label for="ttsEngine">声のエンジン</label>
-      <select id="ttsEngine">
-        <option value="browser">ブラウザ標準の声</option>
-        <option value="fish">Fish Audio</option>
-      </select>
-    </div>
-    <div class="field">
-      <label for="asrEngine">マイクの聞き取り方</label>
-      <select id="asrEngine">
-        <option value="auto">自動（iPhone・iPad は Fish Audio）</option>
-        <option value="browser">ブラウザ標準の音声認識（無料）</option>
-        <option value="fish">Fish Audio の文字起こし（1回0.1円以下）</option>
-      </select>
-      <div class="hint">iPhone・iPad の標準の音声認識は、パラスが話したあと数分聞き取れなくなるため、Fish Audio の文字起こしを使います。Fish Audio のクレジットと、下の中継サーバーの設定が必要です。</div>
-    </div>
-    <div class="field">
-      <label for="fishRelayUrl">中継サーバーのURL</label>
-      <input id="fishRelayUrl" type="text" placeholder="https://pallas-fish-relay.xxxx.workers.dev" autocomplete="off">
-      <div class="hint">Fish Audio・Google ログイン・Google マップ検索で使う Cloudflare Workers の中継サーバーです。設置手順はリポジトリの relay/README.md にあります。</div>
-    </div>
-    <div class="field">
-      <label for="callAsField">パラスからの呼び名</label>
-      <input id="callAsField" type="text" placeholder="ひらがなで（空欄なら「マスター」）" autocomplete="off">
-      <div class="hint">ひらがなで登録します（カタカナは自動でひらがなに直します）。「俺の名前は〇〇」「〇〇って呼んで」と話しかけても登録できます。</div>
-    </div>
-    <div class="field">
-      <label for="googleClientId">Google 連携（カレンダー・Gmail）</label>
-      <input id="googleClientId" type="text" placeholder="OAuth クライアントID（xxxx.apps.googleusercontent.com）" autocomplete="off">
-      <div class="google-row">
-        <span id="googleStatus" class="hint"></span>
-        <button type="button" class="ghost" id="googleConnectBtn">Googleに接続</button>
-        <button type="button" class="ghost" id="googleDisconnectBtn">接続を解除</button>
+    <div class="set-head">
+      <h2>設定</h2>
+      <div class="set-tabs" role="tablist">
+        <button type="button" class="set-tab" data-tab="basic" role="tab">基本</button>
+        <button type="button" class="set-tab" data-tab="voice" role="tab">声と音</button>
+        <button type="button" class="set-tab" data-tab="link" role="tab">連携</button>
+        <button type="button" class="set-tab" data-tab="memory" role="tab">記憶</button>
+        <button type="button" class="set-tab" data-tab="advanced" role="tab">詳細</button>
       </div>
-      <div class="hint">接続すると、パラスがカレンダーの予定の確認・追加と、Gmail の未読の確認・返信の下書きをできるようになります。メールを送信することはありません。</div>
     </div>
-    <div class="field">
-      <label for="googleMapsKey">Google マップ表示用のキー</label>
-      <input id="googleMapsKey" type="text" placeholder="AIza...（Maps JavaScript API 用・このサイトだけに制限したもの）" autocomplete="off">
-      <div class="hint">お店を探したときの地図を Google マップで表示します。空欄なら OpenStreetMap で表示します。</div>
-    </div>
-    <div id="fishFields">
+    <section class="set-panel" data-panel="basic">
       <div class="field">
-        <label for="fishVoice">パラスの声（Fish Audio）</label>
-        <select id="fishVoice"></select>
-        <input id="fishVoiceCustom" type="text" placeholder="Fish Audio の声のID（32文字）" autocomplete="off" style="margin-top:8px">
-        <div class="hint">Fish Audio の公開ボイスです。声のページ（fish.audio/m/声のID）で試聴できます。</div>
+        <label for="apiKey">Anthropic APIキー</label>
+        <input id="apiKey" type="password" placeholder="sk-ant-..." autocomplete="off">
+        <div class="hint">キーはこのブラウザの中（localStorage）にだけ保存され、Anthropic のAPIへ直接送られます。共有のパソコンでは使わないでください。</div>
       </div>
       <div class="field">
-        <label for="fishApiKey">Fish Audio の APIキー</label>
-        <input id="fishApiKey" type="password" placeholder="中継サーバー側に登録した場合は空欄" autocomplete="off">
-        <div class="hint">無料モデル（s2.1-pro-free）を使います。</div>
+        <label for="callAsField">パラスからの呼び名</label>
+        <input id="callAsField" type="text" placeholder="ひらがなで（空欄なら「マスター」）" autocomplete="off">
+        <div class="hint">ひらがなで登録します（カタカナは自動でひらがなに直します）。「俺の名前は〇〇」「〇〇って呼んで」と話しかけても登録できます。</div>
       </div>
-    </div>
-    <div class="field" id="browserVoiceField">
-      <label for="voiceSelect">パラスの声（ブラウザ標準）</label>
-      <select id="voiceSelect"></select>
-    </div>
-    <div class="field">
-      <label for="bgmStyle">BGM の曲調</label>
-      <select id="bgmStyle">
-        <option value="auto">おまかせ（景色に合わせる）</option>
-        <option value="synthwave">シンセウェーブ（電子的・前向き）</option>
-        <option value="lofi">ローファイ（落ち着く・作業向け）</option>
-        <option value="ambient">アンビエント（静か・集中・夜）</option>
-        <option value="bright">さわやか（明るい・朝）</option>
-        <option value="rain">雨とピアノ（しっとり）</option>
-      </select>
-    </div>
-    <div class="field">
-      <label for="bgmVolume">BGM の音量 <span id="bgmVolVal"></span></label>
-      <input id="bgmVolume" type="range" min="0" max="100" step="5">
-      <p class="hint">パラスに「BGM流して」「音楽止めて」「落ち着く曲にして」と話しかけて操作します。パラスが話すときは小さくなり、聞き取り中は止まります。</p>
-    </div>
-    <div class="field">
-      <label for="rate">話す速さ <span id="rateVal"></span></label>
-      <input id="rate" type="range" min="0.7" max="1.6" step="0.05">
-    </div>
-    <div class="field">
-      <label for="pitch">声の高さ（ブラウザ標準の声のみ） <span id="pitchVal"></span></label>
-      <input id="pitch" type="range" min="0.5" max="1.5" step="0.05">
-    </div>
-    <div class="field">
-      <label class="check"><input id="autoListen" type="checkbox"> 話し終えたら自動で聞き取りを再開する（連続会話）</label>
-    </div>
-    <div class="field">
-      <label class="check"><input id="morningGreeting" type="checkbox"> 朝（4〜12時）その日はじめて開いたら、パラスが朝の報告をする</label>
-    </div>
-    <div class="field">
-      <label class="check"><input id="diagLog" type="checkbox"> マイクの診断ログを表示する（不具合の調査用）</label>
-    </div>
-    <div class="field">
-      <label class="check"><input id="showTiming" type="checkbox"> 反応時間を表示する（遅い原因を調べる用）</label>
-    </div>
-    <div class="field">
-      <label for="autoReset">しばらく話さなかったら新しい会話にする</label>
-      <select id="autoReset">
-        <option value="30">30分</option>
-        <option value="60">1時間</option>
-        <option value="180">3時間</option>
-        <option value="0">しない</option>
-      </select>
-      <div class="hint">毎回それまでの会話もまとめて送るため、会話が長いほど料金が上がります。</div>
-    </div>
-    <div class="field">
-      <label>パラスの記憶 <span id="memoryCount"></span></label>
-      <ul class="memory-list" id="memoryList"></ul>
-      <div class="hint">パラスが覚えているマスターのことです。この端末の中にだけ保存されます。「覚えておいて」「忘れて」と話しかけても増減できます。</div>
-      <button type="button" class="ghost" id="clearMemoriesBtn" style="margin-top:8px">記憶をすべて消す</button>
-    </div>
-    <div class="dialog-actions">
+      <h3 class="set-sec">会話</h3>
+      <div class="field">
+        <label class="check"><input id="autoListen" type="checkbox"> 話し終えたら自動で聞き取りを再開する（連続会話）</label>
+      </div>
+      <div class="field">
+        <label class="check"><input id="morningGreeting" type="checkbox"> 朝（4〜12時）その日はじめて開いたら、パラスが朝の報告をする</label>
+      </div>
+      <div class="field">
+        <label for="autoReset">しばらく話さなかったら新しい会話にする</label>
+        <select id="autoReset">
+          <option value="30">30分</option>
+          <option value="60">1時間</option>
+          <option value="180">3時間</option>
+          <option value="0">しない</option>
+        </select>
+        <div class="hint">毎回それまでの会話もまとめて送るため、会話が長いほど料金が上がります。</div>
+      </div>
+    </section>
+    <section class="set-panel" data-panel="voice" hidden>
+      <h3 class="set-sec">パラスの声</h3>
+      <div class="field">
+        <label for="ttsEngine">声のエンジン</label>
+        <select id="ttsEngine">
+          <option value="browser">ブラウザ標準の声</option>
+          <option value="fish">Fish Audio</option>
+        </select>
+      </div>
+      <div id="fishFields">
+        <div class="field">
+          <label for="fishVoice">パラスの声（Fish Audio）</label>
+          <select id="fishVoice"></select>
+          <input id="fishVoiceCustom" type="text" placeholder="Fish Audio の声のID（32文字）" autocomplete="off" style="margin-top:8px">
+          <div class="hint">Fish Audio の公開ボイスです。声のページ（fish.audio/m/声のID）で試聴できます。</div>
+        </div>
+        <div class="field">
+          <label for="fishApiKey">Fish Audio の APIキー</label>
+          <input id="fishApiKey" type="password" placeholder="中継サーバー側に登録した場合は空欄" autocomplete="off">
+          <div class="hint">無料モデル（s2.1-pro-free）を使います。</div>
+        </div>
+      </div>
+      <div class="field" id="browserVoiceField">
+        <label for="voiceSelect">パラスの声（ブラウザ標準）</label>
+        <select id="voiceSelect"></select>
+      </div>
+      <div class="field">
+        <label for="rate">話す速さ <span id="rateVal"></span></label>
+        <input id="rate" type="range" min="0.7" max="1.6" step="0.05">
+      </div>
+      <div class="field">
+        <label for="pitch">声の高さ（ブラウザ標準の声のみ） <span id="pitchVal"></span></label>
+        <input id="pitch" type="range" min="0.5" max="1.5" step="0.05">
+      </div>
       <button type="button" class="ghost" id="testVoiceBtn">声を試す</button>
+      <h3 class="set-sec">マイク</h3>
+      <div class="field">
+        <label for="asrEngine">マイクの聞き取り方</label>
+        <select id="asrEngine">
+          <option value="auto">自動（iPhone・iPad は Fish Audio）</option>
+          <option value="browser">ブラウザ標準の音声認識（無料）</option>
+          <option value="fish">Fish Audio の文字起こし（1回0.1円以下）</option>
+        </select>
+        <div class="hint">iPhone・iPad の標準の音声認識は、パラスが話したあと数分聞き取れなくなるため、Fish Audio の文字起こしを使います。Fish Audio のクレジットと、下の中継サーバーの設定が必要です。</div>
+      </div>
+      <h3 class="set-sec">BGM</h3>
+      <div class="field">
+        <label for="bgmStyle">BGM の曲調</label>
+        <select id="bgmStyle">
+          <option value="auto">おまかせ（景色に合わせる）</option>
+          <option value="synthwave">シンセウェーブ（電子的・前向き）</option>
+          <option value="lofi">ローファイ（落ち着く・作業向け）</option>
+          <option value="ambient">アンビエント（静か・集中・夜）</option>
+          <option value="bright">さわやか（明るい・朝）</option>
+          <option value="rain">雨とピアノ（しっとり）</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="bgmVolume">BGM の音量 <span id="bgmVolVal"></span></label>
+        <input id="bgmVolume" type="range" min="0" max="100" step="5">
+        <p class="hint">パラスに「BGM流して」「音楽止めて」「落ち着く曲にして」と話しかけて操作します。パラスが話すときは小さくなり、聞き取り中は止まります。</p>
+      </div>
+    </section>
+    <section class="set-panel" data-panel="link" hidden>
+      <div class="field">
+        <label for="fishRelayUrl">中継サーバーのURL</label>
+        <input id="fishRelayUrl" type="text" placeholder="https://pallas-fish-relay.xxxx.workers.dev" autocomplete="off">
+        <div class="hint">Fish Audio・Google ログイン・Google マップ検索で使う Cloudflare Workers の中継サーバーです。設置手順はリポジトリの relay/README.md にあります。</div>
+      </div>
+      <h3 class="set-sec">Google</h3>
+      <div class="field">
+        <label for="googleClientId">Google 連携（カレンダー・Gmail）</label>
+        <input id="googleClientId" type="text" placeholder="OAuth クライアントID（xxxx.apps.googleusercontent.com）" autocomplete="off">
+        <div class="google-row">
+          <span id="googleStatus" class="hint"></span>
+          <button type="button" class="ghost" id="googleConnectBtn">Googleに接続</button>
+          <button type="button" class="ghost" id="googleDisconnectBtn">接続を解除</button>
+        </div>
+        <div class="hint">接続すると、パラスがカレンダーの予定の確認・追加と、Gmail の未読の確認・返信の下書きをできるようになります。メールを送信することはありません。</div>
+      </div>
+      <div class="field">
+        <label for="googleMapsKey">Google マップ表示用のキー</label>
+        <input id="googleMapsKey" type="text" placeholder="AIza...（Maps JavaScript API 用・このサイトだけに制限したもの）" autocomplete="off">
+        <div class="hint">お店を探したときの地図を Google マップで表示します。空欄なら OpenStreetMap で表示します。</div>
+      </div>
+    </section>
+    <section class="set-panel" data-panel="memory" hidden>
+      <div class="field">
+        <label>パラスの記憶 <span id="memoryCount"></span></label>
+        <ul class="memory-list" id="memoryList"></ul>
+        <div class="hint">パラスが覚えているマスターのことです。この端末の中にだけ保存されます。「覚えておいて」「忘れて」と話しかけても増減できます。</div>
+        <button type="button" class="ghost" id="clearMemoriesBtn" style="margin-top:8px">記憶をすべて消す</button>
+      </div>
+      <div class="field">
+        <label>パラスの記録</label>
+        <div class="stats-box" id="statsBox"></div>
+        <div class="hint">数を数えるのが好きなパラスが付けている記録です。この端末の中にだけ保存されます。</div>
+      </div>
+    </section>
+    <section class="set-panel" data-panel="advanced" hidden>
+      <div class="field">
+        <label class="check"><input id="diagLog" type="checkbox"> マイクの診断ログを表示する（不具合の調査用）</label>
+      </div>
+      <div class="field">
+        <label class="check"><input id="showTiming" type="checkbox"> 反応時間を表示する（遅い原因を調べる用）</label>
+      </div>
+    </section>
+    <div class="dialog-actions">
+      <button value="cancel" class="ghost" formnovalidate>閉じる</button>
       <button value="save" class="primary">保存</button>
     </div>
   </form>
@@ -3426,7 +3467,7 @@ async function send(text, { hidden = false } = {}) {
   const c = getClient();
   if (!c) {
     addMsg("error", "APIキーが未設定です。右上の「設定」から入力してください。");
-    $("settings").showModal();
+    openSettings("basic");
     return;
   }
   stopSpeaking();
@@ -3791,8 +3832,30 @@ $("clearMemoriesBtn").addEventListener("click", () => {
   memories = [];
   saveMemories();
 });
-$("settingsBtn").addEventListener("click", () => {
-  renderMemoryList(); syncSettingsForm(); $("settings").showModal(); });
+// 設定のタブ
+function showSettingsTab(name) {
+  document.querySelectorAll(".set-tab").forEach((b) => { const on = b.dataset.tab === name; b.classList.toggle("on", on); b.setAttribute("aria-selected", String(on)); });
+  document.querySelectorAll(".set-panel").forEach((p) => { p.hidden = p.dataset.panel !== name; });
+  try { localStorage.setItem("pallas.settingsTab", name); } catch {}
+}
+document.querySelectorAll(".set-tab").forEach((b) => b.addEventListener("click", () => showSettingsTab(b.dataset.tab)));
+function renderStatsBox() {
+  const box = $("statsBox");
+  box.innerHTML = "";
+  const rows = stats ? [
+    ["話した日数", `${stats.days}日`], ["はじめて話した日", stats.since], ["話しかけた回数", `${stats.talks}回`],
+    ["「ありがとう」の回数", `${stats.thanks}回`], ["関係の段階", relationStage(stats.days)],
+  ] : [["まだ記録はありません", ""]];
+  for (const [k, v] of rows) { const a = document.createElement("span"); a.textContent = k; const b2 = document.createElement("span"); b2.textContent = v; box.append(a, b2); }
+}
+function openSettings(tab) {
+  renderMemoryList(); renderStatsBox(); syncSettingsForm();
+  let last = "basic";
+  try { last = localStorage.getItem("pallas.settingsTab") || "basic"; } catch {}
+  showSettingsTab(tab || (settings.apiKey ? last : "basic"));
+  $("settings").showModal();
+}
+$("settingsBtn").addEventListener("click", () => openSettings());
 $("rate").addEventListener("input", (e) => $("rateVal").textContent = `×${Number(e.target.value).toFixed(2)}`);
 $("bgmVolume").addEventListener("input", (e) => {
   $("bgmVolVal").textContent = e.target.value;
@@ -3841,7 +3904,8 @@ $("testVoiceBtn").addEventListener("click", () => {
   speak("パラスです。準備はできています。");
   Object.assign(settings, prev);
 });
-$("settingsForm").addEventListener("submit", () => {
+$("settingsForm").addEventListener("submit", (e) => {
+  if (e.submitter?.value === "cancel") return; // 「閉じる」は保存しない
   settings.apiKey = $("apiKey").value.trim();
   Object.assign(settings, readVoiceForm());
   settings.autoListen = $("autoListen").checked;
