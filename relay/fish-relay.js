@@ -4,7 +4,8 @@
 //   /v1/tts, /v1/asr : Fish Audio（声を作る・声を文字にする）
 //   /google/token    : Google ログインの維持（認可コード・リフレッシュトークンをアクセストークンに交換）
 //   /maps/search     : Google マップのお店・場所検索（Places API）
-//   /maps/route      : Google マップの経路検索（Routes API）。行き方・所要時間・乗り換え
+//   /maps/route      : Google マップの経路検索（Routes API）。行き方・所要時間
+//                      電車・バスは、RAPIDAPI_KEY があれば NAVITIME の乗換検索を使う（Google の API は日本の電車に非対応）
 // 設置方法は relay/README.md を参照。
 
 // パラスを開くページのURL（オリジン）。ここ以外からの呼び出しは断る
@@ -198,6 +199,7 @@ async function mapsRoute(request, env, cors) {
   const destination = waypoint(body.destination);
   if (!origin || !destination) return json({ status: 400, message: "出発地と目的地が必要です" }, 400, cors);
   const mode = TRAVEL_MODES[body.mode] || "WALK";
+  if (mode === "TRANSIT" && env.RAPIDAPI_KEY) return navitimeTransit(body, env, cors);
 
   const req = { origin, destination, travelMode: mode, languageCode: "ja", regionCode: "jp", units: "METRIC" };
   if (mode === "DRIVE") req.routingPreference = "TRAFFIC_AWARE";
@@ -256,6 +258,82 @@ async function mapsRoute(request, env, cors) {
       polyline: r.polyline?.encodedPolyline || "",
       start: ll(leg.startLocation),
       end: ll(leg.endLocation),
+      steps,
+    },
+  }, 200, cors);
+}
+
+// ===== 電車・バスの乗換検索（NAVITIME Route(totalnavi)、RapidAPI 経由） =====
+// RapidAPI の無料プラン（BASIC）で使える。キーは Worker のシークレット RAPIDAPI_KEY に置く。
+const NAVITIME_HOST = "navitime-route-totalnavi.p.rapidapi.com";
+function jstLocal(ms) {
+  // NAVITIME は日本時間の「YYYY-MM-DDThh:mm:ss」で受け取る
+  return new Date(ms + 9 * 3600 * 1000).toISOString().slice(0, 19);
+}
+async function navitimeTransit(body, env, cors) {
+  const pt = (v) => (v && typeof v.lat === "number" && typeof v.lng === "number" ? `${v.lat},${v.lng}` : null);
+  const start = pt(body.origin), goal = pt(body.destination);
+  if (!start || !goal) return json({ status: 400, message: "電車の検索には出発地と目的地の位置（緯度経度）が必要です" }, 400, cors);
+  const q = new URLSearchParams({ start, goal, limit: "1" });
+  const t = (v) => (typeof v === "string" && !Number.isNaN(Date.parse(v)) ? Date.parse(v) : null);
+  if (t(body.arrive_by)) q.set("goal_time", jstLocal(t(body.arrive_by)));
+  else q.set("start_time", jstLocal(Math.max(Date.now(), t(body.depart_at) || 0)));
+
+  const res = await fetch(`https://${NAVITIME_HOST}/route_transit?${q}`, {
+    headers: { "x-rapidapi-key": env.RAPIDAPI_KEY, "x-rapidapi-host": NAVITIME_HOST },
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    return json({ status: res.status, message: `NAVITIME：${data.message || data.error?.message || res.status}` }, res.status, cors);
+  }
+  const item = data.items?.[0];
+  if (!item) return json({ route: null }, 200, cors);
+  const sm = item.summary?.move || {};
+  const sections = item.sections || [];
+  const coord = (c) => (c && typeof c.lat === "number" ? { lat: c.lat, lng: c.lon ?? c.lng } : null);
+  const steps = [];
+  const path = [];
+  sections.forEach((sec, i) => {
+    if (sec.type === "point") { const c = coord(sec.coord); if (c) path.push(c); return; }
+    if (sec.type !== "move") return;
+    const prev = sections[i - 1], next = sections[i + 1];
+    const minutes = Number(sec.time) || 0;
+    const kind = sec.move || "";
+    if (kind === "walk") {
+      steps.push({ mode: "WALK", seconds: minutes * 60, meters: Number(sec.distance) || 0, text: "", transit: null });
+      return;
+    }
+    steps.push({
+      mode: "TRANSIT", seconds: minutes * 60, meters: Number(sec.distance) || 0, text: "",
+      transit: {
+        line: sec.line_name || sec.transport?.name || "",
+        vehicle: kind,
+        color: /^[0-9a-f]{6}$/i.test(sec.transport?.color || "") ? `#${sec.transport.color}` : (sec.transport?.color || ""),
+        headsign: sec.transport?.links?.[0]?.destination?.name || "",
+        from: prev?.name || "",
+        to: next?.name || "",
+        depart: sec.from_time || "",
+        arrive: sec.to_time || "",
+        stops: Number(sec.transport?.links?.[0]?.station_count ?? sec.stop_count ?? 0) || 0,
+        fare: sec.transport?.fare?.unit_0 ?? null,
+      },
+    });
+  });
+  const fare = sm.fare?.unit_0 ?? null;
+  return json({
+    route: {
+      mode: "TRANSIT",
+      seconds: (Number(sm.time) || steps.reduce((a, s) => a + s.seconds / 60, 0)) * 60,
+      meters: Number(sm.distance) || steps.reduce((a, s) => a + s.meters, 0),
+      polyline: "",
+      path,          // 乗り換え駅を結んだ線（実際の線路の形ではない）
+      fare,          // 運賃（IC 運賃がなければ切符の運賃。取れないときは null）
+      transfers: Math.max(0, steps.filter((x) => x.transit).length - 1), // 乗った列車の数 − 1
+      depart: sm.from_time || "",
+      arrive: sm.to_time || "",
+      source: "navitime",
+      start: path[0] || null,
+      end: path[path.length - 1] || null,
       steps,
     },
   }, 200, cors);
