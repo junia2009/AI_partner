@@ -78,7 +78,15 @@ APIキーをブラウザに置きたくない場合は、Cloudflare の Worker �
 3. 中継サーバー（Worker）のコードを、このリポジトリの最新の `relay/fish-relay.js` に貼り替えて Deploy する（`/maps/route` が加わっています）
 4. 使いすぎ防止：「割り当て」で Routes API の1日の上限を 50 などに下げておくと安心
 
-電車・バスの経路は、地域によって Google の API から取れないことがあります。そのときパラスは車での目安を出し、「ナビ開始」ボタンで Google マップのアプリを開くと電車の乗り換え案内が見られます。
+Google の経路 API は、日本の電車・バスに対応していません（Google マップのアプリでは見られますが、API からは取れない）。電車の乗り換えは、次の 3.3 の NAVITIME を使います。設定しない場合、パラスは車での目安を出し、「ナビ開始」ボタンで Google マップのアプリを開くと乗り換え案内が見られます。
+
+### 3.3 電車の乗り換え（NAVITIME）を使う場合
+NAVITIME の乗換検索 API を、RapidAPI というサービス経由で使います（無料プラン「BASIC」あり。月の回数に上限があります）。
+1. https://rapidapi.com でアカウントを作る（Google アカウントでログインできます）
+2. 「NAVITIME Route(totalnavi)」のページ（https://rapidapi.com/navitimejapan-navitimejapan/api/navitime-route-totalnavi ）を開き、「Pricing」で **BASIC（$0）** を選んで「Subscribe」する。月の回数の上限もここで確認できます
+3. 同じページの「Endpoints」の右側（Code Snippets）に出ている **X-RapidAPI-Key** の値を控える
+4. Cloudflare の Worker の **Settings → Variables and Secrets** に、種類「Secret」で `RAPIDAPI_KEY` として登録して Deploy する
+5. Worker のコードが最新の `relay/fish-relay.js` になっていることを確認する
 
 ### 3.5 地図を Google マップで表示するキー（任意）
 地図の表示は、マップ検索とは別の「Maps JavaScript API」を使います（毎月1万回の表示まで無料）。

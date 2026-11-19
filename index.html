@@ -1587,6 +1587,11 @@ async function mapsDirections(input, { fromCard = false } = {}) {
     if (!pos) return { error: "現在地を取得できませんでした。端末の位置情報の許可を確認するか、出発地を教えてもらうよう伝えること" };
     origin = { lat: pos.lat, lng: pos.lng };
   }
+  // 出発地を名前で言われたときも、場所（緯度経度）に直す（電車の乗換検索は緯度経度が必要）
+  if (typeof origin === "string") {
+    const o = await resolveDestination(origin, null);
+    if (o) origin = { lat: o.lat, lng: o.lng };
+  }
   let place = hasLL ? { name: destText, lat: input.dest_lat, lng: input.dest_lng, address: input.dest_address || "" } : null;
   if (!place) {
     place = await resolveDestination(destText, pos);
@@ -1594,8 +1599,13 @@ async function mapsDirections(input, { fromCard = false } = {}) {
   }
   const dest = hasLL ? { lat: input.dest_lat, lng: input.dest_lng } : destText;
   const want = ["walk", "transit", "drive", "bicycle"].includes(input.mode) ? input.mode : "auto";
-  let route = null, note = "";
-  const tryRoute = (mode) => fetchRoute(origin, dest, mode, input).catch((e) => { if (e.status === 0 || e.status === 403 || e.status === 500) throw e; return null; });
+  let route = null, note = "", transitErr = "";
+  const tryRoute = (mode) => fetchRoute(origin, dest, mode, input).catch((e) => {
+    // 電車（NAVITIME）の失敗は、車の目安に切り替えて理由を添える
+    if (/^NAVITIME/.test(e.message)) { transitErr = e.message; return null; }
+    if (e.status === 0 || e.status === 403 || e.status === 500) throw e;
+    return null;
+  });
   try {
     if (want === "auto") {
       route = await tryRoute("walk");
@@ -1611,7 +1621,7 @@ async function mapsDirections(input, { fromCard = false } = {}) {
       route = await tryRoute(want);
       if (!route && want === "transit") {
         route = await tryRoute("drive");
-        if (route) note = "電車・バスの経路は取れなかったので、車での目安を出しています。電車の乗り換えは「ナビ開始」で Google マップのアプリを開くと見られます。";
+        if (route) note = `電車・バスの経路は取れなかったので、車での目安を出しています${transitErr ? `（${transitErr}）` : ""}。電車の乗り換えは「ナビ開始」で Google マップのアプリを開くと見られます。`;
       }
     }
   } catch (err) {
@@ -1630,14 +1640,16 @@ async function mapsDirections(input, { fromCard = false } = {}) {
   const legs = routeLegs(route);
   const firstTransit = legs.find((l) => l.kind === "transit");
   let start = new Date(), eta;
-  if (route.mode === "TRANSIT" && arriveBy) { eta = arriveBy; start = new Date(arriveBy.getTime() - route.seconds * 1000); }
+  if (route.depart && route.arrive && !isNaN(Date.parse(route.depart))) { start = new Date(route.depart); eta = new Date(route.arrive); }
+  else if (route.mode === "TRANSIT" && arriveBy) { eta = arriveBy; start = new Date(arriveBy.getTime() - route.seconds * 1000); }
   else if (input.depart_at && !isNaN(Date.parse(input.depart_at)) && Date.parse(input.depart_at) > Date.now()) start = new Date(input.depart_at);
   eta = eta || new Date(start.getTime() + route.seconds * 1000);
   const modeKey = route.key;
   showRoutePanel({ destName, destPlace, roughPos, navDest, route, legs, modeKey, start, eta, note, pos, input });
 
   if (fromCard) return null;
-  const lines = [`${MODE_LABEL[modeKey]}で約${fmtDuration(route.seconds)}（${fmtDistance(route.meters)}）。${arriveBy && modeKey === "transit" ? `${hhmm(start)}ごろ出発` : `到着は${hhmm(eta)}ごろ`}`];
+  const extra = [route.transfers ? `乗り換え${route.transfers}回` : "", route.fare != null ? `運賃${route.fare}円` : ""].filter(Boolean).join("、");
+  const lines = [`${MODE_LABEL[modeKey]}で約${fmtDuration(route.seconds)}（${fmtDistance(route.meters)}${extra ? `、${extra}` : ""}）。${route.depart ? `${hhmm(start)}出発、${hhmm(eta)}到着` : arriveBy && modeKey === "transit" ? `${hhmm(start)}ごろ出発` : `到着は${hhmm(eta)}ごろ`}`];
   if (firstTransit) {
     for (const l of legs) {
       if (l.kind === "transit") lines.push(`- ${l.line || l.vehicle}${l.headsign ? `（${l.headsign}行き）` : ""}：${l.from}${timeOf(l.depart) ? ` ${timeOf(l.depart)}発` : ""} → ${l.to}${l.stops ? `（${l.stops}駅）` : ""}`);
@@ -1665,7 +1677,8 @@ function showRoutePanel({ destName, destPlace, roughPos, navDest, route, legs, m
     const main = el("div", "info-main");
     const row = el("div", "route-sum");
     row.appendChild(el("span", "big", `約${fmtDuration(route.seconds)}`));
-    row.appendChild(el("span", "info-sub", `${MODE_LABEL[modeKey]} ・ ${fmtDistance(route.meters)} ・ ${hhmm(start)}発 → ${hhmm(eta)}着`));
+    row.appendChild(el("span", "info-sub", [MODE_LABEL[modeKey], fmtDistance(route.meters), `${hhmm(start)}発 → ${hhmm(eta)}着`,
+      route.transfers ? `乗換${route.transfers}回` : "", route.fare != null ? `${route.fare}円` : ""].filter(Boolean).join(" ・ ")));
     main.appendChild(row);
     if (destPlace) main.appendChild(el("div", "info-sub", `📍 ${destPlace}`));
     if (roughPos) main.appendChild(el("div", "info-sub", `⚠ 現在地が大まかです（誤差 約${fmtDistance(roughPos)}）。時間がおかしいときは、設定アプリで位置情報の「正確な位置情報」をオンにしてください。`));
@@ -1711,7 +1724,8 @@ function showRoutePanel({ destName, destPlace, roughPos, navDest, route, legs, m
   drawRouteMap(route, pos);
 }
 async function drawRouteMap(route, pos) {
-  const path = route.polyline ? decodePolyline(route.polyline) : [];
+  // NAVITIME の電車経路は線の形がないので、乗り換え駅を結んだ線で示す
+  const path = route.polyline ? decodePolyline(route.polyline) : (route.path || []);
   if (path.length < 2) return;
   lastLeafletFallback = () => drawLeafletRoute(path);
   if (settings.googleMapsKey && !gmapsFailed) {
