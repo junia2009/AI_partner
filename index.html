@@ -156,7 +156,7 @@
   #todoList li small.over { color: var(--danger); }
   #todoList input { width: 18px; height: 18px; accent-color: var(--accent); }
   /* 方眼は電脳空間のときだけ */
-  body:not([data-scene="cyber"])::before { display: none; }
+  body::before { display: none; } /* 格子は電脳空間の景色の中に描く */
 
   /* 3Dモデル（パラス本体） */
   .stage { display: flex; flex-direction: column; align-items: center; padding: 0 16px 4px; }
@@ -4039,112 +4039,292 @@ if (!Recognition) {
     c.fillRect(x - r, y - r, r * 2, r * 2);
   }
 
+  // 値ノイズ（横方向にくり返す）。重ねて（fBm）雲の形を作る
+  function makeNoise(seed) {
+    const R = rng(seed), N = 256, v = new Float32Array(N * N);
+    for (let i = 0; i < v.length; i++) v[i] = R();
+    return (x, y, period) => {
+      const xi = Math.floor(x), yi = Math.floor(y), xf = x - xi, yf = y - yi;
+      const u = xf * xf * (3 - 2 * xf), q = yf * yf * (3 - 2 * yf);
+      const x0 = ((xi % period) + period) % period, x1 = (x0 + 1) % period, y0 = yi & 255, y1 = (yi + 1) & 255;
+      const a = v[y0 * N + (x0 & 255)], b = v[y0 * N + (x1 & 255)], c = v[y1 * N + (x0 & 255)], d = v[y1 * N + (x1 & 255)];
+      return a + (b - a) * u + (c - a) * q + (a - b - c + d) * u * q;
+    };
+  }
+  // 雲の画像を作る。上面が光を受けて明るく、下ほど影になる。左右の端はつながる
+  // o.cells：横幅全体でのノイズのマス数、o.stretch：縦方向の細かさ（大きいほど横長）、o.th：雲の量（大きいほど少ない）
+  function noiseClouds(seed, LW, LH, o) {
+    const K = o.K || 0.5;
+    const cw = Math.max(8, Math.round(LW * K)), ch = Math.max(8, Math.round(LH * K));
+    const [cv, cx] = offscreen(cw, ch);
+    const noise = makeNoise(seed);
+    const fx = o.cells / cw, fy = fx * o.stretch;
+    const dens = new Float32Array(cw * ch), soft = new Float32Array(cw * ch);
+    for (let y = 0; y < ch; y++) {
+      const vy = y / ch;
+      const bias = o.flat ? 0.5 : Math.min(1, Math.max(0, (vy - o.top) / 0.5)); // 雲海は下ほど濃い
+      // 上下の端は薄くして、層の境目に直線が出ないようにする
+      const edge = o.flat ? Math.sin(Math.PI * vy) : Math.min(1, vy / 0.1);
+      for (let x = 0; x < cw; x++) {
+        // 形は 4 つの細かさを重ね、陰影は粗い 2 つだけで計算する（細かいまだら模様を出さない）
+        let sum = 0, low = 0, amp = 0.5, f = 1, n = 0, nl = 0;
+        for (let k = 0; k < 4; k++) {
+          const v = noise(x * fx * f, y * fy * f + k * 37, o.cells * f);
+          sum += amp * v; n += amp;
+          if (k < 2) { low += amp * v; nl += amp; }
+          amp *= 0.5; f *= 2;
+        }
+        const shape = (s) => Math.max(0, Math.min(1, (s - o.th - 0.25 + bias * 0.5) * o.gain)) * edge;
+        dens[y * cw + x] = shape(sum / n);
+        soft[y * cw + x] = shape(low / nl);
+      }
+    }
+    const img = cx.createImageData(cw, ch), px = img.data;
+    const up = Math.max(1, Math.round(ch * 0.04));
+    const mix = (a, b, k) => a + (b - a) * k;
+    for (let y = 0; y < ch; y++) {
+      for (let x = 0; x < cw; x++) {
+        const i = y * cw + x, d = dens[i];
+        if (!d) continue;
+        const ds = soft[i], du = y >= up ? soft[i - up * cw] : ds;
+        const sh = Math.max(0, Math.min(1, 0.62 + (ds - du) * 1.6 - (y / ch) * (o.flat ? 0 : 0.45)));
+        const [A, B, k] = sh > 0.5 ? [o.mid, o.lit, (sh - 0.5) * 2] : [o.shade, o.mid, sh * 2];
+        px[i * 4] = mix(A[0], B[0], k); px[i * 4 + 1] = mix(A[1], B[1], k); px[i * 4 + 2] = mix(A[2], B[2], k);
+        px[i * 4 + 3] = Math.min(1, d * 1.5) * (o.maxA ?? 1) * 255;
+      }
+    }
+    cx.putImageData(img, 0, 0);
+    return cv;
+  }
+
   // ---------- 場所ごとの描き方 ----------
   // それぞれ { label, light, draw(ctx, t, dt, env) } を返す。light は3Dのパラスの照明と霧の色
   const SCENES = {
-    // 電脳空間：漂う粒子と、それをつなぐ線
+    // 電脳空間：奥へ流れるネオンの格子、地平線の電脳都市、浮かぶ六角形、立ちのぼるデータ
     cyber() {
-      const nodes = Array.from({ length: Math.min(140, Math.max(45, Math.round((w * h) / 8000))) }, () => ({
-        x: Math.random() * w, y: Math.random() * h,
-        vx: (Math.random() - 0.5) * 0.25, vy: (Math.random() - 0.5) * 0.25,
-        r: Math.random() * 1.6 + 0.8, phase: Math.random() * Math.PI * 2,
-      }));
+      const R = rng(505);
+      const hz = h * 0.6; // 地平線
       const [bgC, b] = offscreen(w, h);
-      b.fillStyle = "#0b0f17"; b.fillRect(0, 0, w, h);
-      glow(b, w / 2, h * 0.22, Math.max(w, h) * 0.6, "40,90,170", 0.28);
-      glow(b, w / 2, h * 1.2, Math.max(w, h) * 0.8, "90,60,200", 0.16);
+      b.fillStyle = vgrad(b, [[0, "#04060f"], [0.45, "#0a0f2a"], [0.6, "#1a1446"], [0.62, "#0a0c22"], [1, "#05060f"]]);
+      b.fillRect(0, 0, w, h);
+      glow(b, w / 2, hz, Math.max(w, h) * 0.7, "70,90,220", 0.22);
+      glow(b, w / 2, hz, w * 0.35, "120,200,255", 0.16);
+      // 遠くの星（データの粒）
+      for (let i = 0; i < 160; i++) { b.fillStyle = `rgba(160,200,255,${0.08 + R() * 0.3})`; b.fillRect(R() * w, R() * hz * 0.9, 1, 1); }
+      // 地平線の電脳都市：輪郭だけが光るタワー
+      const towers = [];
+      let x = -20;
+      while (x < w + 20) {
+        const tw = 10 + R() * 34, th = hz * (0.06 + Math.pow(R(), 2.2) * 0.32);
+        towers.push({ x, tw, th });
+        x += tw + R() * 10;
+      }
+      for (const T of towers) {
+        const top = hz - T.th;
+        b.fillStyle = "rgba(8,10,30,0.92)"; b.fillRect(T.x, top, T.tw, T.th);
+        b.strokeStyle = "rgba(110,190,255,0.35)"; b.lineWidth = 1;
+        b.strokeRect(T.x + 0.5, top + 0.5, T.tw - 1, T.th);
+        // 横の光の帯
+        for (let yy = top + 6; yy < hz - 3; yy += 5 + R() * 9) {
+          if (R() < 0.45) { b.fillStyle = `rgba(${R() < 0.75 ? "110,200,255" : "200,120,255"},${0.25 + R() * 0.35})`; b.fillRect(T.x + 2, yy, T.tw - 4, 1); }
+        }
+        if (R() < 0.25) { b.fillStyle = "rgba(150,220,255,0.7)"; b.fillRect(T.x + T.tw / 2 - 0.5, top - 10, 1, 10); }
+      }
+      // 地平線の光の線
+      const hl = b.createLinearGradient(0, 0, w, 0);
+      hl.addColorStop(0, "rgba(120,200,255,0)"); hl.addColorStop(0.5, "rgba(150,220,255,0.9)"); hl.addColorStop(1, "rgba(120,200,255,0)");
+      b.fillStyle = hl; b.fillRect(0, hz - 1, w, 2);
+      glow(b, w / 2, hz, w * 0.5, "120,200,255", 0.08);
+      // 浮かぶ六角形（パラスの盾と同じ形）
+      const hexes = Array.from({ length: Math.round(Math.max(12, w / 60)) }, () => ({
+        x: R() * w, y: R() * h, r: 6 + Math.pow(R(), 2) * 26, vy: -(4 + R() * 10), rot: R() * 6, vr: (R() - 0.5) * 0.3, a: 0.12 + R() * 0.3, fill: R() < 0.3,
+      }));
+      // 立ちのぼるデータの流れ
+      const streams = Array.from({ length: 14 }, () => ({ x: R() * w, y: R() * h, v: 60 + R() * 140, l: 30 + R() * 90 }));
+      let scroll = 0;
       return {
-        label: "電脳空間", grid: true,
+        label: "電脳空間",
         light: { fog: 0x0b1220, key: 0xffffff, keyI: 1.3, rim: 0x7cc4ff, sky: 0xbfd9ff, ground: 0x0b0f17 },
         draw(c, t, dt, env) {
-          c.drawImage(bgC, 0, 0, w, h);
+          const sec = dt / 60;
           const [r, g, bl] = env.col;
-          const linkDist = Math.min(150, Math.max(90, w / 9));
-          for (const n of nodes) {
-            n.x += n.vx * env.speed * dt; n.y += n.vy * env.speed * dt;
-            if (n.x < -20) n.x = w + 20; else if (n.x > w + 20) n.x = -20;
-            if (n.y < -20) n.y = h + 20; else if (n.y > h + 20) n.y = -20;
-          }
+          c.drawImage(bgC, 0, 0, w, h);
+          // 格子の床：奥（地平線）へ向かう線と、手前へ流れてくる横線
+          scroll = (scroll + sec * 0.35 * env.speed) % 1;
+          c.save();
+          c.beginPath(); c.rect(0, hz, w, h - hz); c.clip();
+          const floor = c.createLinearGradient(0, hz, 0, h);
+          floor.addColorStop(0, "rgba(40,30,110,0.35)"); floor.addColorStop(1, "rgba(5,6,20,0)");
+          c.fillStyle = floor; c.fillRect(0, hz, w, h - hz);
           c.lineWidth = 1;
-          for (let i = 0; i < nodes.length; i++) {
-            const a = nodes[i];
-            for (let j = i + 1; j < nodes.length; j++) {
-              const o = nodes[j], dx = a.x - o.x, dy = a.y - o.y, d2 = dx * dx + dy * dy;
-              if (d2 < linkDist * linkDist) {
-                c.strokeStyle = `rgba(${r},${g},${bl},${(1 - Math.sqrt(d2) / linkDist) * 0.32})`;
-                c.beginPath(); c.moveTo(a.x, a.y); c.lineTo(o.x, o.y); c.stroke();
-              }
+          const vx = w / 2, N = 26;
+          for (let i = -N; i <= N; i++) {
+            const xb = vx + i * (w / N) * 1.6;
+            const a = 0.32 * (1 - Math.abs(i) / (N + 4));
+            c.strokeStyle = `rgba(${r},${g},${bl},${a})`;
+            c.beginPath(); c.moveTo(vx + i * 2, hz); c.lineTo(xb, h); c.stroke();
+          }
+          for (let k = 0; k < 18; k++) {
+            const z = (k + 1 - scroll) / 18;            // 0（奥）〜1（手前）
+            const y = hz + (h - hz) * Math.pow(z, 2.2);
+            c.strokeStyle = `rgba(${r},${g},${bl},${0.06 + z * 0.4})`;
+            c.lineWidth = z > 0.7 ? 1.5 : 1;
+            c.beginPath(); c.moveTo(0, y); c.lineTo(w, y); c.stroke();
+          }
+          c.restore();
+          // データの流れ（細い光が上へ）
+          c.globalCompositeOperation = "lighter";
+          for (const s of streams) {
+            s.y -= s.v * sec * env.speed;
+            if (s.y + s.l < 0) { s.y = h + Math.random() * 200; s.x = Math.random() * w; }
+            const gr = c.createLinearGradient(0, s.y, 0, s.y + s.l);
+            gr.addColorStop(0, `rgba(${r},${g},${bl},0.55)`); gr.addColorStop(1, `rgba(${r},${g},${bl},0)`);
+            c.fillStyle = gr; c.fillRect(s.x, s.y, 1.2, s.l);
+          }
+          // 六角形
+          for (const hx of hexes) {
+            hx.y += hx.vy * sec * env.speed; hx.rot += hx.vr * sec * env.speed;
+            if (hx.y < -40) { hx.y = h + 40; hx.x = Math.random() * w; }
+            c.beginPath();
+            for (let k = 0; k < 6; k++) {
+              const an = hx.rot + k * Math.PI / 3;
+              const px = hx.x + Math.cos(an) * hx.r, py = hx.y + Math.sin(an) * hx.r;
+              k ? c.lineTo(px, py) : c.moveTo(px, py);
             }
+            c.closePath();
+            const pa = hx.a * (0.75 + 0.25 * Math.sin(t * 1.3 + hx.x));
+            if (hx.fill) { c.fillStyle = `rgba(${r},${g},${bl},${pa * 0.25})`; c.fill(); }
+            c.strokeStyle = `rgba(${r},${g},${bl},${pa})`; c.lineWidth = 1; c.stroke();
           }
-          for (const n of nodes) {
-            c.fillStyle = `rgba(${r},${g},${bl},${0.55 + 0.4 * Math.sin(t * (env.state === "thinking" ? 5 : 1.5) + n.phase)})`;
-            c.beginPath(); c.arc(n.x, n.y, n.r, 0, Math.PI * 2); c.fill();
-          }
+          c.globalCompositeOperation = "source-over";
         },
       };
     },
 
-    // 夜の街の上空：遠くのビル群の灯り、ネオン、ときどき飛行機
+    // 夜の街の上空：霧に沈む高層ビル群、高速道路の光の流れ、サーチライト、航空障害灯、月
     city() {
       const R = rng(101);
       const [bgC, b] = offscreen(w, h);
-      b.fillStyle = vgrad(b, [[0, "#04060e"], [0.45, "#0b1028"], [0.75, "#24143a"], [1, "#3a1838"]]);
+      b.fillStyle = vgrad(b, [[0, "#03050d"], [0.35, "#0a0e26"], [0.62, "#22163f"], [0.8, "#3d1d45"], [1, "#4a2140"]]);
       b.fillRect(0, 0, w, h);
-      for (let i = 0; i < 120; i++) { b.fillStyle = `rgba(255,255,255,${0.1 + R() * 0.3})`; b.fillRect(R() * w, R() * h * 0.45, 1, 1); }
-      glow(b, w * 0.5, h * 0.95, Math.max(w, h) * 0.75, "255,110,170", 0.22);
-      glow(b, w * 0.15, h * 0.9, w * 0.5, "90,180,255", 0.12);
-      const windows = [], neons = [];
+      for (let i = 0; i < 160; i++) { b.fillStyle = `rgba(255,255,255,${0.06 + R() * 0.3})`; b.fillRect(R() * w, R() * h * 0.42, 1, 1); }
+      // 月
+      const mx = w * 0.8, my = h * 0.17, mr = Math.min(w, h) * 0.035;
+      glow(b, mx, my, mr * 9, "190,200,255", 0.12);
+      glow(b, mx, my, mr * 3, "220,225,255", 0.25);
+      b.fillStyle = "#e9ecff"; b.beginPath(); b.arc(mx, my, mr, 0, Math.PI * 2); b.fill();
+      b.fillStyle = "rgba(150,160,200,0.35)";
+      [[-0.3, -0.2, 0.25], [0.25, 0.15, 0.18], [-0.05, 0.35, 0.14]].forEach(([dx, dy, rr]) => { b.beginPath(); b.arc(mx + dx * mr, my + dy * mr, rr * mr, 0, Math.PI * 2); b.fill(); });
+      // 街の明かりで地平が明るい
+      glow(b, w * 0.5, h * 1.05, Math.max(w, h) * 0.8, "255,120,170", 0.2);
+      glow(b, w * 0.2, h * 0.95, w * 0.45, "90,170,255", 0.12);
+      const [fgC, f] = offscreen(w, h); // ビル群は別の層に描く（サーチライトをビルの後ろに通すため）
+      const neons = [], beacons = [];
+      // 奥から手前へ 4 層。奥ほど霧の色に溶ける
       const layers = [
-        { color: "#1b1f3e", hMin: 0.22, hMax: 0.48, wMin: 18, wMax: 46, win: 2, lit: 0.22, haze: 0.35 },
-        { color: "#11142b", hMin: 0.16, hMax: 0.38, wMin: 26, wMax: 70, win: 3, lit: 0.25, haze: 0.15 },
-        { color: "#07081a", hMin: 0.08, hMax: 0.26, wMin: 40, wMax: 110, win: 4, lit: 0.3, haze: 0 },
+        { col: [58, 44, 96], hMin: 0.18, hMax: 0.44, wMin: 14, wMax: 34, win: 1.6, lit: 0.3, fog: 0.55 },
+        { col: [38, 30, 72], hMin: 0.14, hMax: 0.4, wMin: 20, wMax: 50, win: 2, lit: 0.3, fog: 0.35 },
+        { col: [20, 18, 46], hMin: 0.1, hMax: 0.34, wMin: 30, wMax: 80, win: 2.6, lit: 0.32, fog: 0.15 },
+        { col: [8, 8, 22], hMin: 0.06, hMax: 0.24, wMin: 50, wMax: 120, win: 3.4, lit: 0.35, fog: 0 },
       ];
+      const base = h * 0.9; // 高速道路の高さ
       layers.forEach((L, li) => {
         let x = -R() * 40;
+        const fill = `rgb(${L.col.join(",")})`;
         while (x < w) {
-          const bw = L.wMin + R() * (L.wMax - L.wMin), bh = h * (L.hMin + R() * (L.hMax - L.hMin)), top = h - bh;
-          b.fillStyle = L.color; b.fillRect(x, top, bw, bh);
-          if (R() < 0.3) { b.fillRect(x + bw * 0.4, top - bh * 0.08, Math.max(2, bw * 0.08), bh * 0.08); } // アンテナ
-          const step = L.win * 3;
-          for (let wy = top + step; wy < h - step; wy += step) {
-            for (let wx = x + L.win * 1.5; wx < x + bw - L.win * 2; wx += step) {
-              if (R() < L.lit) {
-                const warm = R() < 0.7, a = 0.35 + R() * 0.5;
-                const color = warm ? `rgba(255,214,140,${a})` : `rgba(160,215,255,${a})`;
-                b.fillStyle = color; b.fillRect(wx, wy, L.win, L.win * 1.3);
-                if (R() < 0.04) windows.push({ x: wx, y: wy, s: L.win, color, on: true, next: R() * 20 });
+          const bw = L.wMin + R() * (L.wMax - L.wMin), bh = h * (L.hMin + R() * (L.hMax - L.hMin)), top = base - bh;
+          f.fillStyle = fill;
+          f.fillRect(x, top, bw, bh + h);
+          // 屋上の形：段差・とがった屋根・アンテナ
+          const roof = R();
+          if (roof < 0.25) { f.fillRect(x + bw * 0.2, top - bh * 0.07, bw * 0.6, bh * 0.07); f.fillRect(x + bw * 0.35, top - bh * 0.12, bw * 0.3, bh * 0.05); }
+          else if (roof < 0.4) { f.beginPath(); f.moveTo(x, top); f.lineTo(x + bw / 2, top - bw * 0.6); f.lineTo(x + bw, top); f.fill(); }
+          else if (roof < 0.6) { f.fillRect(x + bw * 0.48, top - bh * 0.18, Math.max(1.5, bw * 0.04), bh * 0.18); beacons.push({ x: x + bw * 0.5, y: top - bh * 0.18, ph: R() * 6, li }); }
+          // 窓：階ごとに明かりのつき方をそろえる（オフィスらしく）
+          const step = L.win * 2.6;
+          for (let wy = top + step; wy < base - step; wy += step) {
+            const floorLit = R() < 0.5 ? L.lit * 2.2 : L.lit * 0.4;
+            const cool = R() < 0.35;
+            for (let wx = x + L.win; wx < x + bw - L.win * 1.5; wx += step * 0.9) {
+              if (R() < floorLit) {
+                const a = (0.3 + R() * 0.55) * (1 - L.fog * 0.6);
+                f.fillStyle = cool ? `rgba(170,220,255,${a})` : `rgba(255,212,150,${a})`;
+                f.fillRect(wx, wy, L.win, L.win * 1.2);
               }
             }
           }
-          if (li > 0 && R() < 0.12) neons.push({ x: x + bw * 0.2, y: top + bh * (0.1 + R() * 0.3), w: bw * 0.6, h: 3 + R() * 4, color: R() < 0.5 ? "255,90,190" : "80,230,255", ph: R() * 10 });
-          if (L.haze) { b.fillStyle = `rgba(60,40,90,${L.haze})`; b.fillRect(x, top, bw, bh); }
-          x += bw + R() * 6;
+          if (li >= 2 && R() < 0.1) neons.push({ x: x + bw * (0.15 + R() * 0.5), y: top + bh * (0.08 + R() * 0.3), w: Math.max(3, bw * 0.08), h: bh * (0.15 + R() * 0.2), color: R() < 0.5 ? "255,80,180" : "70,230,255", ph: R() * 10 });
+          x += bw + R() * 4;
+        }
+        // 層と層の間に霧
+        if (L.fog || li < 3) {
+          const fg = f.createLinearGradient(0, base - h * 0.25, 0, base);
+          fg.addColorStop(0, "rgba(70,40,90,0)"); fg.addColorStop(1, `rgba(90,50,110,${0.25 + (3 - li) * 0.08})`);
+          f.fillStyle = fg; f.fillRect(0, base - h * 0.25, w, h * 0.25);
         }
       });
-      let plane = null, nextPlane = 8;
+      // 高速道路
+      f.fillStyle = "#06060f"; f.fillRect(0, base, w, h - base);
+      f.fillStyle = "rgba(255,170,90,0.35)"; f.fillRect(0, base, w, 1.5);
+      for (let lx = R() * 80; lx < w; lx += 70 + R() * 40) { f.fillStyle = "#0b0b18"; f.fillRect(lx, base + 6, 6, h); glow(f, lx + 3, base - 4, 18, "255,180,100", 0.25); }
+      const lanes = [
+        { y: base + 4, dir: 1, color: "255,60,60", n: 26 },   // テールランプ
+        { y: base + 9, dir: -1, color: "255,240,210", n: 22 }, // ヘッドライト
+      ];
+      const cars = lanes.flatMap((ln) => Array.from({ length: ln.n }, () => ({ ln, x: R() * w, v: 40 + R() * 50 })));
+      const beams = [{ x: w * 0.22, ph: 0, sp: 0.18 }, { x: w * 0.68, ph: 2, sp: 0.13 }];
+      let plane = null, nextPlane = 10;
       return {
         label: "夜の街の上空",
         light: { fog: 0x1c1430, key: 0xd8d4ff, keyI: 1.1, rim: 0xff7ac8, sky: 0x9aa8ff, ground: 0x2a1640 },
         draw(c, t, dt) {
+          const sec = dt / 60;
           c.drawImage(bgC, 0, 0, w, h);
+          // サーチライト（ビルの後ろから空へ）
+          c.globalCompositeOperation = "lighter";
+          for (const bm of beams) {
+            const an = -Math.PI / 2 + Math.sin(t * bm.sp + bm.ph) * 0.45;
+            const L = h * 1.1, spread = 0.035;
+            const gx = bm.x + Math.cos(an) * L, gy = base + Math.sin(an) * L;
+            const gr = c.createLinearGradient(bm.x, base, gx, gy);
+            gr.addColorStop(0, "rgba(200,210,255,0.10)"); gr.addColorStop(1, "rgba(200,210,255,0)");
+            c.fillStyle = gr;
+            c.beginPath(); c.moveTo(bm.x, base);
+            c.lineTo(bm.x + Math.cos(an - spread) * L, base + Math.sin(an - spread) * L);
+            c.lineTo(bm.x + Math.cos(an + spread) * L, base + Math.sin(an + spread) * L);
+            c.closePath(); c.fill();
+          }
+          c.globalCompositeOperation = "source-over";
+          c.drawImage(fgC, 0, 0, w, h);
+          c.globalCompositeOperation = "lighter";
+          // ネオン
           for (const n of neons) {
-            const flick = n.ph > 7 && Math.sin(t * 13 + n.ph) > 0.92 ? 0.2 : 1; // たまにちらつく
-            c.fillStyle = `rgba(${n.color},${0.75 * flick})`; c.fillRect(n.x, n.y, n.w, n.h);
-            glow(c, n.x + n.w / 2, n.y + n.h / 2, n.w * 0.9, n.color, 0.18 * flick);
+            const flick = n.ph > 7 && Math.sin(t * 13 + n.ph) > 0.92 ? 0.25 : 1;
+            c.fillStyle = `rgba(${n.color},${0.8 * flick})`; c.fillRect(n.x, n.y, n.w, n.h);
+            glow(c, n.x + n.w / 2, n.y + n.h / 2, n.h * 0.9, n.color, 0.22 * flick);
           }
-          for (const win of windows) {
-            if (t > win.next) { win.on = !win.on; win.next = t + 3 + Math.random() * 25; }
-            if (!win.on) { c.fillStyle = "#0a0c1e"; c.fillRect(win.x, win.y, win.s, win.s * 1.3); }
+          // 航空障害灯（ゆっくり点滅）
+          for (const bc of beacons) {
+            const on = Math.sin(t * 2 + bc.ph) > 0.2;
+            if (on) { c.fillStyle = "rgba(255,60,60,0.95)"; c.fillRect(bc.x - 1, bc.y - 1, 2, 2); glow(c, bc.x, bc.y, 8 - bc.li, "255,50,50", 0.55); }
           }
+          // 高速道路の車の光
+          for (const car of cars) {
+            if (!reduceMotion) car.x += car.ln.dir * car.v * sec;
+            if (car.x > w + 10) car.x = -10; else if (car.x < -10) car.x = w + 10;
+            c.fillStyle = `rgba(${car.ln.color},0.9)`; c.fillRect(car.x, car.ln.y, 4, 1.6);
+            glow(c, car.x + 2, car.ln.y + 1, 7, car.ln.color, 0.3);
+          }
+          c.globalCompositeOperation = "source-over";
+          // 飛行機
           if (!plane && t > nextPlane && !reduceMotion) {
             const dir = Math.random() < 0.5 ? 1 : -1;
-            plane = { x: dir > 0 ? -20 : w + 20, y: h * (0.08 + Math.random() * 0.25), v: dir * (18 + Math.random() * 14) };
+            plane = { x: dir > 0 ? -20 : w + 20, y: h * (0.08 + Math.random() * 0.22), v: dir * (18 + Math.random() * 14) };
           }
           if (plane) {
-            plane.x += plane.v * dt / 60;
-            const blink = Math.sin(t * 6) > 0.6;
+            plane.x += plane.v * sec;
             c.fillStyle = "rgba(255,255,255,0.8)"; c.fillRect(plane.x, plane.y, 2, 2);
-            if (blink) glow(c, plane.x + 1, plane.y + 1, 6, "255,80,80", 0.9);
+            if (Math.sin(t * 6) > 0.6) glow(c, plane.x + 1, plane.y + 1, 6, "255,80,80", 0.9);
             if (plane.x < -40 || plane.x > w + 40) { plane = null; nextPlane = t + 25 + Math.random() * 35; }
           }
         },
@@ -4204,120 +4384,195 @@ if (!Recognition) {
       };
     },
 
-    // 雲の上：雲海と空の色（朝焼け・青空・夕焼け）
+    // 雲の上：ノイズで作った立体的な雲海、太陽の光の筋、高い空の巻雲（朝焼け・青空・夕焼け）
     sky(variant) {
       const P = {
         dawn: {
-          label: "雲の上（朝焼け）", sky: [[0, "#141c44"], [0.35, "#4a3f7a"], [0.62, "#c97a8a"], [0.78, "#ffb98a"]],
-          sun: [0.76, 0.6, "255,214,160"], cloud: ["255,214,200", "120,96,150"],
+          label: "雲の上（朝焼け）", sky: [[0, "#141c44"], [0.32, "#4a3f7a"], [0.55, "#c97a8a"], [0.68, "#ffc39a"]],
+          sun: [0.74, 0.56, "255,214,160"], lit: [255, 222, 205], mid: [214, 150, 170], shade: [96, 78, 132], haze: "255,190,160",
           light: { fog: 0x9a7090, key: 0xffd2b0, keyI: 1.5, rim: 0xff9a70, sky: 0xffd8c0, ground: 0x3a3060 },
         },
         day: {
-          label: "雲の上（青空）", sky: [[0, "#123a72"], [0.45, "#3f78b6"], [0.75, "#8fbde0"]],
-          sun: [0.78, 0.14, "255,255,240"], cloud: ["250,252,255", "150,172,200"],
+          label: "雲の上（青空）", sky: [[0, "#0f3368"], [0.4, "#3a74b4"], [0.66, "#a6cdea"]],
+          sun: [0.78, 0.16, "255,255,240"], lit: [255, 255, 255], mid: [222, 232, 244], shade: [140, 160, 192], haze: "220,236,255",
           light: { fog: 0x86b2d8, key: 0xffffff, keyI: 1.6, rim: 0xc0e6ff, sky: 0xe0f0ff, ground: 0x5a7090 },
         },
         sunset: {
-          label: "雲の上（夕焼け）", sky: [[0, "#120f30"], [0.35, "#45285a"], [0.6, "#b0485a"], [0.78, "#ff9a5a"]],
-          sun: [0.24, 0.62, "255,170,100"], cloud: ["255,184,140", "92,52,84"],
+          label: "雲の上（夕焼け）", sky: [[0, "#120f30"], [0.32, "#45285a"], [0.55, "#b0485a"], [0.68, "#ffa262"]],
+          sun: [0.24, 0.57, "255,170,100"], lit: [255, 196, 140], mid: [196, 104, 108], shade: [72, 42, 78], haze: "255,150,100",
           light: { fog: 0x8a4a5a, key: 0xffb080, keyI: 1.5, rim: 0xff7040, sky: 0xffc0a0, ground: 0x301838 },
         },
       }[variant] || {};
-      const R = rng(variant === "day" ? 303 : variant === "dawn" ? 304 : 305);
+      const seed = variant === "day" ? 303 : variant === "dawn" ? 304 : 305;
+      const R = rng(seed);
       const [bgC, b] = offscreen(w, h);
       b.fillStyle = vgrad(b, P.sky); b.fillRect(0, 0, w, h);
       const [sx, sy, sc] = P.sun;
-      glow(b, sx * w, sy * h, Math.max(w, h) * 0.6, sc, 0.35);
-      glow(b, sx * w, sy * h, Math.max(w, h) * 0.12, sc, 0.7);
-      b.fillStyle = `rgba(${sc},0.95)`; b.beginPath(); b.arc(sx * w, sy * h, Math.min(w, h) * 0.03, 0, Math.PI * 2); b.fill();
-      // 上空の薄い筋雲
-      for (let i = 0; i < 8; i++) {
-        b.save(); b.translate(R() * w, h * (0.08 + R() * 0.35)); b.scale(1, 0.12);
-        glow(b, 0, 0, w * (0.15 + R() * 0.2), P.cloud[0], 0.12 + R() * 0.1);
-        b.restore();
-      }
-      // 雲海：3層。横に2画面ぶんの幅で描いて、ゆっくり流す（左右はつながるように描く）
-      const seaTop = h * 0.62;
+      const SX = sx * w, SY = sy * h;
+      glow(b, SX, SY, Math.max(w, h) * 0.75, sc, 0.3);
+      glow(b, SX, SY, Math.max(w, h) * 0.18, sc, 0.55);
+      glow(b, SX, SY, Math.min(w, h) * 0.06, "255,255,245", 0.9);
+      b.fillStyle = "rgba(255,252,240,1)"; b.beginPath(); b.arc(SX, SY, Math.min(w, h) * 0.022, 0, Math.PI * 2); b.fill();
+      // 高い空の巻雲（横に引き伸ばしたノイズ）
+      b.drawImage(noiseClouds(seed + 9, w, h * 0.5, {
+        cells: 3, stretch: 5, flat: true, th: 0.55, gain: 2.2, lit: P.lit, mid: P.lit, shade: P.mid, maxA: 0.45, K: 0.25,
+      }), 0, h * 0.04, w, h * 0.5);
+      // 地平線のもや
+      const hz = h * 0.6;
+      const hg = b.createLinearGradient(0, hz - h * 0.12, 0, hz + h * 0.1);
+      hg.addColorStop(0, `rgba(${P.haze},0)`); hg.addColorStop(0.6, `rgba(${P.haze},0.35)`); hg.addColorStop(1, `rgba(${P.haze},0)`);
+      b.fillStyle = hg; b.fillRect(0, hz - h * 0.12, w, h * 0.22);
+      // 雲海：奥から手前へ 3 層。横に 2 画面ぶんの幅で、左右がつながるように作ってゆっくり流す
       const clouds = [0, 1, 2].map((li) => {
-        // 低い解像度で描いてから引き伸ばすと、自然にぼけて綿のような質感になる
-        const K = 0.35;
-        const LW = w * 2, LH = h - seaTop + h * 0.1;
-        const [cC, cc] = offscreen(LW * K, LH * K);
-        cc.scale(K, K);
-        const base = LH * (0.35 + li * 0.18);
-        const puffs = 150 + li * 60;
-        for (let i = 0; i < puffs; i++) {
-          const x = R() * LW, y = base + (R() - 0.3) * LH * 0.22, r = (25 + R() * 80) * (0.7 + li * 0.25);
-          for (const dx of [0, LW, -LW]) {
-            cc.save(); cc.translate(x + dx, y); cc.scale(1.4, 0.7);
-            const g = cc.createRadialGradient(0, -r * 0.3, r * 0.05, 0, 0, r);
-            g.addColorStop(0, `rgba(${P.cloud[0]},${0.55 - li * 0.05})`);
-            g.addColorStop(0.55, `rgba(${P.cloud[1]},0.3)`);
-            g.addColorStop(1, `rgba(${P.cloud[1]},0)`);
-            cc.fillStyle = g; cc.beginPath(); cc.arc(0, 0, r, 0, Math.PI * 2); cc.fill();
-            cc.restore();
-          }
-        }
-        const fill = cc.createLinearGradient(0, base, 0, base + LH * 0.4);
-        fill.addColorStop(0, `rgba(${P.cloud[1]},0)`);
-        fill.addColorStop(1, `rgba(${P.cloud[1]},${0.75 + li * 0.1})`);
-        cc.fillStyle = fill; cc.fillRect(0, base, LW, LH);
-        return { c: cC, LW, LH, y: seaTop - h * 0.1 + li * h * 0.05, speed: 4 + li * 6, x: R() * LW };
+        const LW = w * 2, LH = h * (0.34 + li * 0.08);
+        const tex = noiseClouds(seed * 7 + li, LW, LH, {
+          cells: 5 + li * 2, stretch: 1.6 - li * 0.25, top: 0.12, th: 0.36 - li * 0.03, gain: 2.6,
+          lit: P.lit, mid: P.mid, shade: P.shade, maxA: 1, K: 0.45, depth: li,
+        });
+        return { c: tex, LW, LH, y: hz - h * 0.08 + li * h * 0.09, speed: 3 + li * 5, x: R() * LW };
       });
+      // 光の筋
+      const rays = Array.from({ length: 7 }, () => ({ an: R() * Math.PI * 2, wd: 0.03 + R() * 0.05, sp: (R() - 0.5) * 0.02 }));
+      const rayA = variant === "day" ? 0.025 : 0.04;
       return {
         label: P.label, light: P.light,
         draw(c, t, dt) {
           c.drawImage(bgC, 0, 0, w, h);
-          for (const L of clouds) {
-            if (!reduceMotion) L.x = (L.x + L.speed * dt / 60) % L.LW;
-            c.drawImage(L.c, -L.x, L.y, L.LW, L.LH);
-            c.drawImage(L.c, -L.x + L.LW, L.y, L.LW, L.LH);
+          c.globalCompositeOperation = "lighter";
+          const L = Math.max(w, h) * 1.2;
+          for (const ry of rays) {
+            const an = ry.an + t * ry.sp;
+            const gr = c.createRadialGradient(SX, SY, 0, SX, SY, L);
+            gr.addColorStop(0, `rgba(${sc},${rayA})`); gr.addColorStop(0.6, `rgba(${sc},${rayA * 0.3})`); gr.addColorStop(1, `rgba(${sc},0)`);
+            c.fillStyle = gr;
+            c.beginPath(); c.moveTo(SX, SY);
+            c.lineTo(SX + Math.cos(an - ry.wd) * L, SY + Math.sin(an - ry.wd) * L);
+            c.lineTo(SX + Math.cos(an + ry.wd) * L, SY + Math.sin(an + ry.wd) * L);
+            c.closePath(); c.fill();
           }
+          c.globalCompositeOperation = "source-over";
+          for (const Lr of clouds) {
+            if (!reduceMotion) Lr.x = (Lr.x + Lr.speed * dt / 60) % Lr.LW;
+            c.drawImage(Lr.c, -Lr.x, Lr.y, Lr.LW, Lr.LH);
+            c.drawImage(Lr.c, -Lr.x + Lr.LW, Lr.y, Lr.LW, Lr.LH);
+          }
+          // 太陽の側の雲が明るく照らされる
+          c.globalCompositeOperation = "lighter";
+          glow(c, SX, Math.max(SY, h * 0.62), Math.max(w, h) * 0.35, sc, 0.12);
+          c.globalCompositeOperation = "source-over";
         },
       };
     },
 
-    // 雨の夜：ぼやけた街の光、降る雨、ガラスを伝うしずく、ときどき遠い稲光
+    // 雨の夜：窓ガラス越しにぼやけた夜景、光のボケ、ガラスの水滴と伝うしずく、奥と手前の雨、遠い稲光
     rain() {
       const R = rng(404);
       const [bgC, b] = offscreen(w, h);
-      b.fillStyle = vgrad(b, [[0, "#04070d"], [0.6, "#0b1322"], [1, "#132036"]]);
+      b.fillStyle = vgrad(b, [[0, "#03060c"], [0.5, "#0a1424"], [1, "#16243a"]]);
       b.fillRect(0, 0, w, h);
-      for (let i = 0; i < 45; i++) {
-        const warm = R() < 0.55;
-        glow(b, R() * w, h * (0.35 + R() * 0.65), 12 + R() * 55, warm ? "255,190,120" : "110,170,255", 0.1 + R() * 0.2);
+      // ぼやけた夜景：小さく描いてから引き伸ばしてぼかす
+      const K = 0.12;
+      const [sC, s] = offscreen(w * K, h * K);
+      s.scale(K, K);
+      let x = 0;
+      while (x < w) {
+        const bw = 30 + R() * 90, bh = h * (0.15 + R() * 0.45), top = h * 0.95 - bh;
+        s.fillStyle = `rgb(${10 + R() * 10},${16 + R() * 10},${30 + R() * 14})`; s.fillRect(x, top, bw, h);
+        for (let wy = top + 8; wy < h; wy += 10) for (let wx = x + 5; wx < x + bw - 5; wx += 9) {
+          if (R() < 0.3) { s.fillStyle = R() < 0.7 ? "rgba(255,200,130,0.8)" : "rgba(150,200,255,0.8)"; s.fillRect(wx, wy, 4, 5); }
+        }
+        x += bw + R() * 20;
       }
-      const drops = Array.from({ length: Math.round((w * h) / 4500) }, () => ({ x: R() * w, y: R() * h, v: 600 + R() * 500, l: 10 + R() * 18, a: 0.08 + R() * 0.22 }));
-      const beads = Array.from({ length: Math.round((w * h) / 16000) }, () => ({ x: R() * w, y: R() * h, r: 1.2 + Math.pow(R(), 2) * 4.5, slide: 0 }));
-      let flash = 0, nextFlash = 20 + R() * 30;
+      // 段階的に引き伸ばすと、ブロック状にならずになめらかにぼける
+      const [mC, mm] = offscreen(w * 0.3, h * 0.3);
+      mm.drawImage(sC, 0, 0, mC.width, mC.height);
+      const [nC, nn] = offscreen(w * 0.06, h * 0.06);
+      nn.drawImage(mC, 0, 0, nC.width, nC.height);
+      mm.clearRect(0, 0, mC.width, mC.height); mm.drawImage(nC, 0, 0, mC.width, mC.height);
+      b.globalAlpha = 0.9;
+      b.drawImage(mC, 0, 0, w, h);
+      b.globalAlpha = 0.35;
+      b.drawImage(sC, 0, 0, w, h); // 少しだけ元の灯りの粒を残す
+      b.globalAlpha = 1;
+      // 光のボケ（街灯・車・信号）
+      for (let i = 0; i < 45; i++) {
+        const col = R() < 0.55 ? "255,196,140" : R() < 0.6 ? "130,180,255" : R() < 0.5 ? "255,110,100" : "150,240,190";
+        const r = 5 + Math.pow(R(), 2.2) * 38, bx = R() * w, by = h * (0.35 + R() * 0.65), a = 0.08 + R() * 0.16;
+        const g = b.createRadialGradient(bx, by, 0, bx, by, r);
+        g.addColorStop(0, `rgba(${col},${a * 0.7})`); g.addColorStop(0.8, `rgba(${col},${a})`); g.addColorStop(1, `rgba(${col},0)`);
+        b.fillStyle = g; b.beginPath(); b.arc(bx, by, r, 0, Math.PI * 2); b.fill();
+      }
+      // ガラスの曇り
+      b.fillStyle = "rgba(120,140,170,0.06)"; b.fillRect(0, 0, w, h);
+      // ガラスに付いた水滴（小さなレンズ：下が明るく、上に白い反射）
+      const [gC, gl] = offscreen(w, h);
+      for (let i = 0; i < Math.round((w * h) / 3200); i++) {
+        const dx = R() * w, dy = R() * h, r = 0.8 + Math.pow(R(), 3) * 5;
+        const g = gl.createRadialGradient(dx, dy + r * 0.4, r * 0.1, dx, dy, r);
+        g.addColorStop(0, "rgba(210,225,250,0.28)"); g.addColorStop(0.7, "rgba(40,55,80,0.25)"); g.addColorStop(1, "rgba(10,15,25,0.35)");
+        gl.fillStyle = g; gl.beginPath(); gl.ellipse(dx, dy, r * 0.9, r, 0, 0, Math.PI * 2); gl.fill();
+        if (r > 1.6) { gl.fillStyle = "rgba(255,255,255,0.5)"; gl.beginPath(); gl.arc(dx - r * 0.3, dy - r * 0.35, r * 0.22, 0, Math.PI * 2); gl.fill(); }
+      }
+      const farRain = Array.from({ length: Math.round((w * h) / 5000) }, () => ({ x: R() * w, y: R() * h, v: 500 + R() * 300, l: 6 + R() * 10, a: 0.05 + R() * 0.1 }));
+      const nearRain = Array.from({ length: Math.round((w * h) / 30000) }, () => ({ x: R() * w, y: R() * h, v: 1100 + R() * 500, l: 30 + R() * 30, a: 0.1 + R() * 0.12 }));
+      const runs = Array.from({ length: 7 }, () => ({ x: R() * w, y: -R() * h, v: 0, r: 2 + R() * 2.5, wait: R() * 8, trail: [] }));
+      let flash = 0, nextFlash = 18 + R() * 25, bolt = null;
       return {
         label: "雨の夜",
         light: { fog: 0x0e1626, key: 0xc4d2ff, keyI: 1.0, rim: 0x6aa0ff, sky: 0x9ab0d8, ground: 0x0a1018 },
         draw(c, t, dt) {
           const sec = dt / 60;
           c.drawImage(bgC, 0, 0, w, h);
+          // 稲光：空がひかり、たまに遠くに稲妻の筋
+          if (!reduceMotion && t > nextFlash) {
+            flash = 1; nextFlash = t + 25 + Math.random() * 40;
+            if (Math.random() < 0.6) {
+              const pts = []; let px = w * (0.1 + Math.random() * 0.8), py = 0;
+              while (py < h * 0.45) { pts.push([px, py]); px += (Math.random() - 0.5) * 40; py += 10 + Math.random() * 25; }
+              bolt = pts;
+            }
+          }
+          if (flash > 0) {
+            c.fillStyle = `rgba(200,215,255,${flash * 0.2})`; c.fillRect(0, 0, w, h);
+            if (bolt && flash > 0.5) {
+              c.strokeStyle = `rgba(230,235,255,${flash})`; c.lineWidth = 1.5;
+              c.beginPath(); bolt.forEach(([px, py], i) => (i ? c.lineTo(px, py) : c.moveTo(px, py))); c.stroke();
+            }
+            flash = Math.max(0, flash - sec * 2.2);
+            if (flash === 0) bolt = null;
+          }
+          // 奥の雨
           c.lineWidth = 1;
-          for (const d of drops) {
-            if (!reduceMotion) { d.y += d.v * sec; d.x -= d.v * sec * 0.12; }
+          for (const d of farRain) {
+            if (!reduceMotion) { d.y += d.v * sec; d.x -= d.v * sec * 0.1; }
             if (d.y > h + 20) { d.y = -20; d.x = Math.random() * (w + 60); }
             c.strokeStyle = `rgba(170,195,230,${d.a})`;
-            c.beginPath(); c.moveTo(d.x, d.y); c.lineTo(d.x + d.l * 0.12, d.y - d.l); c.stroke();
+            c.beginPath(); c.moveTo(d.x, d.y); c.lineTo(d.x + d.l * 0.1, d.y - d.l); c.stroke();
           }
-          for (const bd of beads) {
-            if (!reduceMotion && bd.r > 3.6 && Math.random() < 0.002) bd.slide = 40 + Math.random() * 60;
-            if (bd.slide > 0) {
-              const dy = Math.min(bd.slide, 70 * sec); bd.y += dy; bd.slide -= dy;
-              c.strokeStyle = "rgba(190,210,240,0.08)"; c.lineWidth = bd.r * 0.8;
-              c.beginPath(); c.moveTo(bd.x, bd.y - 30); c.lineTo(bd.x, bd.y); c.stroke();
-              if (bd.y > h + 10) { bd.y = -10; bd.x = Math.random() * w; }
-            }
-            c.fillStyle = "rgba(20,30,50,0.35)"; c.beginPath(); c.arc(bd.x, bd.y, bd.r, 0, Math.PI * 2); c.fill();
-            c.fillStyle = "rgba(220,235,255,0.35)"; c.beginPath(); c.arc(bd.x - bd.r * 0.3, bd.y - bd.r * 0.3, bd.r * 0.35, 0, Math.PI * 2); c.fill();
+          // ガラスの水滴
+          c.drawImage(gC, 0, 0, w, h);
+          // ガラスを伝い落ちるしずく
+          for (const rd of runs) {
+            if (reduceMotion) break;
+            if (rd.wait > 0) { rd.wait -= sec; continue; }
+            rd.v = Math.min(140, rd.v + 60 * sec * (Math.random() < 0.3 ? 3 : 0.5));
+            rd.y += rd.v * sec; rd.x += (Math.random() - 0.5) * 0.6;
+            rd.trail.push([rd.x, rd.y]); if (rd.trail.length > 40) rd.trail.shift();
+            c.strokeStyle = "rgba(190,210,240,0.12)"; c.lineWidth = rd.r * 0.7; c.lineCap = "round";
+            c.beginPath(); rd.trail.forEach(([px, py], i) => (i ? c.lineTo(px, py) : c.moveTo(px, py))); c.stroke();
+            const g = c.createRadialGradient(rd.x, rd.y + rd.r * 0.3, 0, rd.x, rd.y, rd.r * 1.3);
+            g.addColorStop(0, "rgba(220,232,255,0.45)"); g.addColorStop(1, "rgba(30,40,60,0.2)");
+            c.fillStyle = g; c.beginPath(); c.ellipse(rd.x, rd.y, rd.r, rd.r * 1.3, 0, 0, Math.PI * 2); c.fill();
+            c.fillStyle = "rgba(255,255,255,0.6)"; c.beginPath(); c.arc(rd.x - rd.r * 0.3, rd.y - rd.r * 0.4, rd.r * 0.25, 0, Math.PI * 2); c.fill();
+            if (rd.y > h + 20) { rd.y = -10; rd.x = Math.random() * w; rd.v = 0; rd.trail = []; rd.wait = 3 + Math.random() * 10; }
           }
-          if (!reduceMotion && t > nextFlash) { flash = 1; nextFlash = t + 25 + Math.random() * 40; }
-          if (flash > 0) {
-            c.fillStyle = `rgba(200,215,255,${flash * 0.18})`; c.fillRect(0, 0, w, h);
-            flash = Math.max(0, flash - sec * 2.5);
+          c.lineCap = "butt";
+          // 手前の雨（太く速い）
+          for (const d of nearRain) {
+            if (!reduceMotion) { d.y += d.v * sec; d.x -= d.v * sec * 0.14; }
+            if (d.y > h + 40) { d.y = -40; d.x = Math.random() * (w + 80); }
+            c.strokeStyle = `rgba(200,220,245,${d.a})`; c.lineWidth = 1.4;
+            c.beginPath(); c.moveTo(d.x, d.y); c.lineTo(d.x + d.l * 0.14, d.y - d.l); c.stroke();
           }
         },
       };
