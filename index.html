@@ -4108,9 +4108,9 @@ if (!Recognition) {
       // ---- 動かない部分 ----
       const [bgC, b] = offscreen(w, h);
       const bg = b.createRadialGradient(w / 2, h * 0.42, 0, w / 2, h * 0.42, Math.hypot(w, h) * 0.65);
-      bg.addColorStop(0, "#0a1626"); bg.addColorStop(0.45, "#060c18"); bg.addColorStop(1, "#020308");
+      bg.addColorStop(0, "#10243c"); bg.addColorStop(0.45, "#0a1526"); bg.addColorStop(1, "#03060d");
       b.fillStyle = bg; b.fillRect(0, 0, w, h);
-      glow(b, w / 2, hz, w * 0.6, "60,130,200", 0.07); // 地平のかすかな明るさ
+      glow(b, w / 2, hz, w * 0.7, "60,140,220", 0.14); // 地平のかすかな明るさ
       // 回路の線：画面の端から中心へ、直角と 45 度だけで折れる
       const traces = Array.from({ length: 8 }, (_, k) => {
         const side = k % 4; // 0 左 1 右 2 上 3 下
@@ -4149,7 +4149,7 @@ if (!Recognition) {
           for (let j = 0; j < ROWS; j++) {
             const z = (j + 1 - drift) / ROWS;                 // 0 奥 → 1 手前
             const y = hz + (h - hz) * Math.pow(z, 2.4);
-            const spread = 0.15 + z * 1.35, a = Math.pow(z, 1.5) * 0.5;
+            const spread = 0.15 + z * 1.35, a = 0.08 + Math.pow(z, 1.3) * 0.75;
             const sz = 0.6 + z * 1.4;
             c.fillStyle = `rgba(${C},${a})`;
             for (let i = 0; i <= COLS; i++) {
@@ -4162,7 +4162,7 @@ if (!Recognition) {
           // 回路の線と、そこを走る光
           c.lineWidth = 1;
           for (const tr of traces) {
-            c.strokeStyle = `rgba(${C},0.07)`;
+            c.strokeStyle = `rgba(${C},0.16)`;
             c.beginPath(); tr.pts.forEach(([x, y], i) => (i ? c.lineTo(x, y) : c.moveTo(x, y))); c.stroke();
             if (tr.p < 0 && t > tr.next && !reduceMotion) tr.p = 0;
             if (tr.p >= 0) {
@@ -4180,7 +4180,7 @@ if (!Recognition) {
               for (let k = 0; k < 10; k++) {
                 const d = head - k * 6; if (d < 0) break;
                 const [px, py] = at(d);
-                c.fillStyle = `rgba(${k ? C : "235,248,255"},${(1 - k / 10) * 0.75})`;
+                c.fillStyle = `rgba(${k ? C : "235,248,255"},${(1 - k / 10) * 0.95})`;
                 c.fillRect(px - 1, py - 1, 2, 2);
               }
               if (tr.p >= tr.len) { const [ex, ey] = tr.pts[tr.pts.length - 1]; glow(c, ex, ey, 10, C, 0.5 * Math.max(0, 1 - (tr.p - tr.len) / 80)); }
@@ -4195,7 +4195,7 @@ if (!Recognition) {
             const k = 0.35 / d.z;
             const x = w / 2 + d.x * w * k * 0.5, y = h * 0.42 + d.y * h * k * 0.5;
             if (x < -10 || x > w + 10 || y < -10 || y > h + 10) continue;
-            const near = 1 - d.z, a = Math.min(1, near * 1.2) * 0.55, s = 0.5 + near * 1.8;
+            const near = 1 - d.z, a = Math.min(1, 0.15 + near * 1.3) * 0.8, s = 0.6 + near * 2;
             c.fillStyle = `rgba(${near > 0.85 ? "225,240,255" : C},${a})`;
             c.fillRect(x - s / 2, y - s / 2, s, s);
           }
@@ -4204,38 +4204,40 @@ if (!Recognition) {
           const { x: cx, y: cy } = center();
           const rr = S * 0.3;
           // リングの内側のかすかな光と、パラスの盾と同じ六角形
-          glow(c, cx, cy, rr * 1.3, C, 0.07);
-          c.strokeStyle = `rgba(${C},0.1)`; c.lineWidth = 1;
+          glow(c, cx, cy, rr * 1.5, C, 0.14);
+          c.strokeStyle = `rgba(${C},0.2)`; c.lineWidth = 1;
           c.beginPath();
           for (let k = 0; k < 6; k++) { const an = Math.PI / 6 + k * Math.PI / 3 + t * 0.008 * sp; k ? c.lineTo(cx + Math.cos(an) * rr * 0.62, cy + Math.sin(an) * rr * 0.62) : c.moveTo(cx + Math.cos(an) * rr * 0.62, cy + Math.sin(an) * rr * 0.62); }
           c.closePath(); c.stroke();
           // 外周：4 か所が切れた細い円
           const o1 = t * 0.03 * sp;
-          c.strokeStyle = `rgba(${C},0.3)`;
+          c.strokeStyle = `rgba(${C},0.5)`;
           for (let q = 0; q < 4; q++) { c.beginPath(); c.arc(cx, cy, rr, o1 + q * Math.PI / 2 + 0.08, o1 + (q + 1) * Math.PI / 2 - 0.08); c.stroke(); }
           // 細かい目盛り
           const o2 = -t * 0.015 * sp;
           for (let k = 0; k < 144; k++) {
             const an = o2 + k * Math.PI * 2 / 144, long = k % 12 === 0;
             const r1 = rr * 0.9, r2 = rr * (long ? 0.86 : 0.885);
-            c.strokeStyle = `rgba(${C},${long ? 0.45 : 0.18})`;
+            c.strokeStyle = `rgba(${C},${long ? 0.7 : 0.3})`;
             c.beginPath(); c.moveTo(cx + Math.cos(an) * r1, cy + Math.sin(an) * r1); c.lineTo(cx + Math.cos(an) * r2, cy + Math.sin(an) * r2); c.stroke();
           }
           // 速さの違う弧
-          const arcs = [[rr * 1.08, 0.7, 0.05, 0.38], [rr * 0.8, 0.25, -0.12, 0.6], [rr * 0.8, 0.12, -0.12, 0.6, Math.PI], [rr * 1.16, 1.6, 0.02, 0.14]];
+          const arcs = [[rr * 1.08, 0.7, 0.05, 0.6], [rr * 0.8, 0.25, -0.12, 0.85], [rr * 0.8, 0.12, -0.12, 0.85, Math.PI], [rr * 1.16, 1.6, 0.02, 0.25]];
           for (const [ar, len, spd, a, off = 0] of arcs) {
             const s0 = off + t * spd * sp;
-            c.strokeStyle = `rgba(${C},${a})`; c.lineWidth = a > 0.4 ? 1.5 : 1;
+            c.strokeStyle = `rgba(${C},${a * 0.25})`; c.lineWidth = 5; // にじむ光
+            c.beginPath(); c.arc(cx, cy, ar, s0, s0 + len); c.stroke();
+            c.strokeStyle = `rgba(${C},${a})`; c.lineWidth = a > 0.5 ? 1.5 : 1;
             c.beginPath(); c.arc(cx, cy, ar, s0, s0 + len); c.stroke();
           }
           c.lineWidth = 1;
           // 外側の点線の円
-          c.fillStyle = `rgba(${C},0.18)`;
+          c.fillStyle = `rgba(${C},0.35)`;
           for (let k = 0; k < 90; k++) { const an = t * 0.01 * sp + k * Math.PI / 45; c.fillRect(cx + Math.cos(an) * rr * 1.24 - 0.5, cy + Math.sin(an) * rr * 1.24 - 0.5, 1, 1); }
           // 小さな計測値（ゆっくり変わる）
           readT += sec;
           if (readT > 0.6) { readT = 0; reads[0] = (reads[0] + 0.7 + Math.random()) % 360; reads[1] = Math.max(0, Math.min(100, reads[1] + (Math.random() - 0.5) * 6)); reads[2] = (reads[2] + Math.floor(Math.random() * 40)) % 10000; }
-          c.font = mono; c.fillStyle = `rgba(${C},0.5)`;
+          c.font = mono; c.fillStyle = `rgba(${C},0.75)`;
           c.textAlign = "left";
           c.fillText(`${reads[0].toFixed(1).padStart(5, "0")}°`, cx + rr * 0.78, cy - rr * 0.68);
           c.fillText(`SYNC ${reads[1].toFixed(0).padStart(3, " ")}%`, cx + rr * 0.86, cy + rr * 0.6);
@@ -4243,7 +4245,7 @@ if (!Recognition) {
           c.fillText(`NODE ${String(reads[2]).padStart(4, "0")}`, cx - rr * 0.8, cy - rr * 0.62);
           c.textAlign = "left";
           // 計測値へ伸びる細い引き出し線
-          c.strokeStyle = `rgba(${C},0.18)`;
+          c.strokeStyle = `rgba(${C},0.32)`;
           c.beginPath(); c.moveTo(cx + Math.cos(-0.85) * rr, cy + Math.sin(-0.85) * rr); c.lineTo(cx + rr * 0.76, cy - rr * 0.72); c.stroke();
           c.beginPath(); c.moveTo(cx - Math.cos(0.9) * rr, cy - Math.sin(0.9) * rr); c.lineTo(cx - rr * 0.78, cy - rr * 0.66); c.stroke();
 
