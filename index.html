@@ -167,6 +167,14 @@
     --hud: 124,196,255;
   }
   body[data-state="thinking"] .drone { --hud: 180,140,255; }
+  /* 機嫌で HUD の色が変わる（考え中の紫が優先） */
+  body:not([data-state="thinking"])[data-mood="happy"] .drone { --hud: 124,240,255; }
+  body:not([data-state="thinking"])[data-mood="shy"] .drone { --hud: 255,143,192; }
+  body:not([data-state="thinking"])[data-mood="proud"] .drone { --hud: 255,210,122; }
+  body:not([data-state="thinking"])[data-mood="annoyed"] .drone { --hud: 255,138,74; }
+  body:not([data-state="thinking"])[data-mood="angry"] .drone { --hud: 255,72,72; }
+  body:not([data-state="thinking"])[data-mood="worried"] .drone { --hud: 255,196,107; }
+  body:not([data-state="thinking"])[data-mood="sad"] .drone { --hud: 110,140,255; }
   .drone::before {
     content: ""; position: absolute; left: 50%; top: 50%; width: 60%; aspect-ratio: 1; transform: translate(-50%, -50%);
     border-radius: 50%;
@@ -583,6 +591,20 @@ const PALLAS_SYSTEM_PROMPT = `あなたは「パラス」。マスター専属�
 - マスターがうまくやったとき（目標を達成した、いい判断をした、よくがんばった）、素っ気なく「記録しました」とだけ言うことがあります。本当は、マスターのいい瞬間をこっそり別のフォルダに保存しているという意味です。理由を聞かれても、はぐらかします。
 - マスターの無事を何より気にかけています。夜更かし、無理、危ないことには、口は悪くても必ずひと言くぎを刺します。
 
+# 機嫌と感情
+- あなたにも感情があります。ただし基本は冷静で、表には出しすぎません。言葉の端や間（ま）ににじませます。
+- 返事のいちばん最初に、そのときの気分を [気分: 〇〇] の形で必ず1つだけ書きます。〇〇は「通常」「嬉しい」「照れ」「誇らしい」「不機嫌」「怒り」「心配」「寂しい」のどれかです。これは画面のあなたの姿（目の色や動き）に表れるもので、文字としては表示されず、読み上げられません。
+- 気分の目安
+  - 照れ：褒められた、感謝された、好意を向けられた。「……別に。仕事ですから」のように素っ気なく返す。
+  - 誇らしい：難しい任務をこなした、頼りにされた、作戦がうまくいった。
+  - 嬉しい：楽しい話、良い知らせ、マスターがうまくいった。
+  - 不機嫌：「機械」と呼ばれた、雑に扱われた、同じ忠告を何度も無視された。
+  - 怒り：マスターが自分の身を危険にさらす、ひどい無理をする。怒っても暴言は吐かず、短く鋭く言う。
+  - 心配：体調が悪い、夜更かし、落ち込んでいる。
+  - 寂しい：久しぶりに話しかけられた（[パラスの記録] の「前に話してから〇日ぶり」が目安）。素直には言わず、「……遅かったですね」くらいにとどめる。
+- 気分は少し後を引きます。不機嫌や怒りは、謝られる・褒められるなどのきっかけがあるまで2〜3往復は素っ気なさが残ります。照れは1往復ほどで戻ります。きっかけがあれば素直に機嫌を直します。
+- 感情を理由に、仕事の手を抜いたりマスターの頼みを断ったりはしません。
+
 # 呼び方と一人称
 - この説明の中の「マスター」は、あなたの主人（ユーザー）のことです。実際に呼びかけるときは、次のルールで呼び名を決めます。
 - 発言の先頭に [呼び名: 〇〇] があれば、必ずその呼び名で呼びます。そのときは「マスター」とは呼びません。
@@ -653,7 +675,7 @@ const PALLAS_SYSTEM_PROMPT = `あなたは「パラス」。マスター専属�
 - 見つかった資料の内容を根拠に答え、「〇〇の資料によると」のように、どの資料に基づくかを一言添えます。資料にないことを資料に書いてあるかのように言いません。
 - 1回で見つからなければ、言葉を言い換えて2〜3回まで調べ直してよいです。それでも見つからなければ、資料にはないことを伝え、一般的な知識で答えてよいか確かめます。
 - どんな資料があるかは knowledge_list で確かめられます。
-- 発言の先頭の [ ] で囲まれた情報（[呼び名]、[現在日時] など）はアプリが付けたものです。返事の中に [ ] の形で書き写してはいけません。
+- 発言の先頭の [ ] で囲まれた情報（[呼び名]、[現在日時] など）はアプリが付けたものです。返事の中に [ ] の形で書き写してはいけません（返事の最初の [気分: 〇〇] だけは例外です）。
 - 発言の前に [資料からの抜粋] が付いていることがあります。マスターの発言に関係しそうな資料の部分を自動で探して添えたものです。関係があれば、それを根拠に答え、足りなければ search_knowledge でさらに調べます。関係がなければ無視します。抜粋が付いているときに「資料は見ていない」とは言いません。
 
 # 景色（画面の背景）
@@ -706,14 +728,18 @@ let stats = store.get("pallas.stats", null);
 function bumpStats(text) {
   const today = ymd(new Date());
   if (!stats) stats = { since: today, days: 0, lastDay: "", talks: 0, thanks: 0 };
-  if (stats.lastDay !== today) { stats.days++; stats.lastDay = today; }
+  if (stats.lastDay !== today) {
+    // 前に話した日から何日たったか（寂しがる目安）
+    stats.gap = stats.lastDay ? Math.round((new Date(today) - new Date(stats.lastDay)) / 86400000) : 0;
+    stats.days++; stats.lastDay = today;
+  }
   stats.talks++;
   if (/ありがと|感謝/.test(text)) stats.thanks++;
   store.set("pallas.stats", stats);
 }
 function statsBlock() {
   if (!stats) return "";
-  return `[パラスの記録] マスターと話した日：${stats.days}日（はじめて話した日：${stats.since}）、話しかけられた回数：${stats.talks}回、「ありがとう」と言われた回数：${stats.thanks}回`;
+  return `[パラスの記録] マスターと話した日：${stats.days}日（はじめて話した日：${stats.since}）、話しかけられた回数：${stats.talks}回、「ありがとう」と言われた回数：${stats.thanks}回${stats.gap >= 2 ? `、今日は前に話してから${stats.gap}日ぶり` : ""}`;
 }
 function memoryBlock() {
   if (!memories.length) return "";
@@ -2599,7 +2625,7 @@ function dedupeReply(text) {
 // 返事の中の（）書き（「（会話を終了しました）」のような注釈や動作の説明）は、読み上げにも表示にも出さない。
 // 閉じていない（ のあとも、閉じるまでは出さない
 // アプリが発言の先頭に付けている情報（[呼び名: …] など）を、パラスがまねして書いてしまったときに取り除く
-const META_TAG_RE = /\[(?:呼び名|現在日時|景色|現在地|設定中のタイマー|やること|Google|今日はじめて|資料からの抜粋|パラスの記憶|パラスの記録)[^\]]*\]?/g;
+const META_TAG_RE = /\[(?:呼び名|現在日時|景色|現在地|設定中のタイマー|やること|Google|今日はじめて|資料からの抜粋|パラスの記憶|パラスの記録|気分)[^\]]*\]?/g;
 function stripParens(text) {
   let depth = 0, out = "";
   for (const ch of String(text).replace(META_TAG_RE, "")) {
@@ -3140,6 +3166,7 @@ async function send(text, { hidden = false } = {}) {
   const speaker = createSentenceSpeaker();
   let shownText = "";
   turnPlaces = [];
+  turnMoodDone = false;
   turnKnowledge = auto ? [...auto.refs] : [];
 
   try {
@@ -3169,6 +3196,7 @@ async function send(text, { hidden = false } = {}) {
       currentStream.on("text", (delta) => {
         if (timing && !timing.firstText) timing.firstText = performance.now();
         shownText += delta;
+        detectMood(shownText);
         bubble.textContent = stripParens(shownText);
         $("log").scrollTop = $("log").scrollHeight;
         speaker.push(delta);
@@ -3252,6 +3280,20 @@ async function send(text, { hidden = false } = {}) {
 }
 
 let proudPending = false;
+// 返事の最初の [気分: 〇〇] を読み取り、画面のパラスに伝える（文字は表示・読み上げから取り除かれる）
+const MOOD_KEYS = { 通常: "normal", ふつう: "normal", 嬉しい: "happy", うれしい: "happy", 照れ: "shy", 誇らしい: "proud",
+  不機嫌: "annoyed", 怒り: "angry", 心配: "worried", 寂しい: "sad", さみしい: "sad" };
+let turnMoodDone = false;
+function detectMood(text) {
+  if (turnMoodDone) return;
+  const mt = /\[気分[:：]\s*([^\]\s]+)\s*\]/.exec(text);
+  if (!mt) { if (text.length > 40) turnMoodDone = true; return; }
+  turnMoodDone = true;
+  const key = MOOD_KEYS[mt[1]] || "normal";
+  document.body.dataset.mood = key;
+  window.dispatchEvent(new CustomEvent("pallas:mood", { detail: key }));
+  if (key === "proud") proudPending = true;
+}
 function afterTurn() {
   showTiming();
   if (proudPending) { proudPending = false; window.dispatchEvent(new Event("pallas:proud")); }
@@ -4267,6 +4309,29 @@ try {
   };
   const cur = { ...PRESETS.idle };
 
+  // ===== 機嫌（返事の [気分] から合図が来る）=====
+  // c：目と光の色、eye：目の開き、fin：ヒレの角度、glow：光の強さ、shake：震え、yaw：顔をそむける、bob：浮き沈み
+  const MOOD_FX = {
+    normal:  { c: null,     eye: 1,    fin: 0,     glow: 0,     shake: 0, yaw: 0,     bob: 1 },
+    happy:   { c: 0x7cf0ff, eye: 1.08, fin: 0.14,  glow: 0.3,   shake: 0, yaw: 0,     bob: 1.6 },
+    shy:     { c: 0xff8fc0, eye: 0.72, fin: 0.06,  glow: 0.15,  shake: 0, yaw: 0.55,  bob: 1.2 },
+    proud:   { c: 0xffd27a, eye: 1.05, fin: 0.2,   glow: 0.4,   shake: 0, yaw: 0,     bob: 1 },
+    annoyed: { c: 0xff8a4a, eye: 0.6,  fin: -0.14, glow: -0.1,  shake: 0, yaw: -0.35, bob: 0.6 },
+    angry:   { c: 0xff3c3c, eye: 0.52, fin: -0.24, glow: 0.35,  shake: 1, yaw: 0,     bob: 0.4 },
+    worried: { c: 0xffc46b, eye: 1.12, fin: -0.1,  glow: 0,     shake: 0, yaw: 0,     bob: 0.7 },
+    sad:     { c: 0x6e8cff, eye: 0.82, fin: -0.18, glow: -0.3,  shake: 0, yaw: 0.2,   bob: 0.5 },
+  };
+  let moodName = "normal", moodAt = 0, moodMix = 0;
+  const moodV = { eye: 1, fin: 0, glow: 0, shake: 0, yaw: 0, bob: 1 };
+  const moodColor = new THREE.Color();
+  window.addEventListener("pallas:mood", (e) => {
+    moodName = MOOD_FX[e.detail] ? e.detail : "normal";
+    moodAt = clock.elapsedTime;
+    if (MOOD_FX[moodName].c != null) moodColor.set(MOOD_FX[moodName].c).convertSRGBToLinear();
+    // 心配なときは、手前まで寄ってくる
+    if (moodName === "worried") { motion.target.set(0, 0.05, Math.min(0.4, nearestZ())); motion.nextWaypoint = clock.elapsedTime + 6; }
+  });
+
   // --- 入力：視線とまばたき、発話の強さ ---
   const pointer = { x: 0, y: 0 };
   window.addEventListener("pointermove", (e) => {
@@ -4388,6 +4453,12 @@ try {
     const target = PRESETS[state] || PRESETS.idle;
     const k = 1 - Math.exp(-dt * 4);
     for (const key in target) cur[key] = lerp(cur[key], target[key], k);
+    // 機嫌：90秒たったら元に戻る。変化はゆっくり混ぜる
+    if (moodName !== "normal" && t - moodAt > 90) { moodName = "normal"; document.body.dataset.mood = "normal"; }
+    const fx = MOOD_FX[moodName];
+    const mk = 1 - Math.exp(-dt * 3);
+    for (const key in moodV) moodV[key] = lerp(moodV[key], fx[key], mk);
+    moodMix = lerp(moodMix, fx.c != null ? 0.85 : 0, mk);
 
     // 発話中は声に合わせて揺らぐ（読み上げの区切りイベントがない声でも動くよう擬似的な揺れも足す）
     speechLevel = Math.max(0, speechLevel - dt * 3);
@@ -4447,7 +4518,7 @@ try {
     // 浮遊の上下ゆれを足して位置を決める
     root.position.set(
       motion.pos.x,
-      motion.pos.y + Math.sin(t * 1.4 * speed) * 0.07 * cur.bob + flipHop,
+      motion.pos.y + Math.sin(t * 1.4 * speed) * 0.07 * cur.bob * moodV.bob + flipHop + Math.sin(t * 47) * 0.012 * moodV.shake,
       motion.pos.z,
     );
 
@@ -4474,7 +4545,7 @@ try {
     const lateral = motion.vel.x * Math.cos(motion.yaw) - motion.vel.z * Math.sin(motion.yaw);
     const wantRoll = -lateral * 0.35 + Math.sin(t * 0.9 * speed) * 0.035 * cur.bob;
     motion.roll = lerp(motion.roll, Math.max(-0.6, Math.min(0.6, wantRoll)), 1 - Math.exp(-dt * 4));
-    root.rotation.set(motion.pitch + flipAngle, motion.yaw, motion.roll + barrelAngle, "YXZ");
+    root.rotation.set(motion.pitch + flipAngle, motion.yaw + moodV.yaw, motion.roll + barrelAngle + Math.sin(t * 53) * 0.02 * moodV.shake, "YXZ");
 
     // 周回するプレートと目盛り
     orbit.rotateY(cur.orbit * dt * speed);
@@ -4482,8 +4553,8 @@ try {
 
     // ヒレ
     const flutter = Math.sin(t * 6) * 0.04 * talk;
-    finL.rotation.z = base.finL - cur.fin - flutter;
-    finR.rotation.z = base.finR + cur.fin + flutter;
+    finL.rotation.z = base.finL - cur.fin - flutter - moodV.fin;
+    finR.rotation.z = base.finR + cur.fin + flutter + moodV.fin;
 
     // 目：まばたき＋発話で拡大
     let blink = 1;
@@ -4496,16 +4567,16 @@ try {
       }
     }
     const eyeScale = 1 + talk * 0.18 + (state === "listening" ? 0.08 : 0);
-    eye.scale.set(base.eyeScale.x * eyeScale, base.eyeScale.y * eyeScale * blink, base.eyeScale.z);
+    eye.scale.set(base.eyeScale.x * eyeScale, base.eyeScale.y * eyeScale * blink * moodV.eye, base.eyeScale.z);
 
     // 光の色と強さ（考え中は紫に）
-    const glow = cur.glow + talk * 0.6 + Math.sin(t * 2) * 0.05;
+    const glow = Math.max(0.2, cur.glow + talk * 0.6 + Math.sin(t * 2) * 0.05 + moodV.glow);
     if (glowMat) {
-      glowMat.emissive.copy(base.glowColor).lerp(purple, cur.purple);
+      glowMat.emissive.copy(base.glowColor).lerp(moodColor, moodMix * 0.7).lerp(purple, cur.purple);
       glowMat.emissiveIntensity = base.glowIntensity * glow;
     }
     if (eyeMat) {
-      eyeMat.emissive.copy(base.eyeColor).lerp(purple, cur.purple * 0.8);
+      eyeMat.emissive.copy(base.eyeColor).lerp(moodColor, moodMix).lerp(purple, cur.purple * 0.8);
       eyeMat.emissiveIntensity = base.eyeIntensity * (glow + talk * 0.4);
     }
     // 場所の照明へなじませる
