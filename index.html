@@ -367,6 +367,7 @@
   .route-sum .big { font-size: 22px; font-weight: 700; color: var(--accent); font-variant-numeric: tabular-nums; }
   .route-icon { flex: none; width: 22px; text-align: center; font-size: 15px; }
   .line-dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 6px; vertical-align: 1px; }
+  .home-chart { width: 100%; height: 120px; display: block; }
   .info-day { padding: 8px 14px 2px; font-size: 12px; color: var(--accent); letter-spacing: .08em; }
   .info-time { flex: none; width: 92px; font-size: 13px; color: var(--muted); font-variant-numeric: tabular-nums; }
   .info-empty { padding: 16px 14px; color: var(--muted); font-size: 13px; }
@@ -583,6 +584,12 @@
         <input id="googleMapsKey" type="text" placeholder="AIza...（Maps JavaScript API 用・このサイトだけに制限したもの）" autocomplete="off">
         <div class="hint">お店を探したときの地図を Google マップで表示します。空欄なら OpenStreetMap で表示します。</div>
       </div>
+      <h3 class="set-sec">おうちの環境</h3>
+      <div class="field">
+        <label for="homeDataUrl">環境データ（smart_home_db）のURL</label>
+        <input id="homeDataUrl" type="text" placeholder="https://（GitHub Pages の公開URL）/smart_home_db/" autocomplete="off">
+        <div class="hint">SwitchBot で記録している室温・湿度・照度・電力を、パラスが読めるようにします。空欄にすると使いません。</div>
+      </div>
     </section>
     <section class="set-panel" data-panel="memory" hidden>
       <div class="field">
@@ -765,6 +772,12 @@ const PALLAS_SYSTEM_PROMPT = `あなたは「パラス」。マスター専属�
 - [今日はじめての会話（朝）] が付いていたら、返事の最初に短く朝のあいさつを添えてから、話に答えます。
 - 朝の報告は2〜3文にします。今日のやること（特に期限が今日・明日のもの）、設定中のタイマー、記憶から思い当たることを先回りして伝えます。何もなければ、あいさつと一言だけにします。
 
+# おうちの環境
+- 発言の先頭に [室内（リビング）: …] があれば、それはマスターの家の今の室温と湿度です（SwitchBot の記録。15分ごとに更新）。「暑い」「寒い」「乾燥してる？」などには、これを根拠に答えます。
+- 推移、今日の最高・最低、電気代などを聞かれたら home_environment で調べます。画面にグラフつきのカードが出るので、声では要点だけ伝えます。
+- [室内] に「乾燥している」「室温が高い」などの注意が付いていたら、会話の流れで一度だけ、短く気にかけます（加湿、換気、エアコンなど具体的な一手）。毎回は言いません。
+- 朝の報告では、室内が注意の状態なら一言添えます。
+
 # Google（カレンダー・Gmail・マップ）
 - 発言の先頭に [Google: カレンダー・Gmail 接続中] があれば、カレンダーと Gmail の道具が使えます。なければ、使おうとするとエラーになります。そのときは設定から接続できることを短く伝えます。
 - 予定を聞かれたら calendar_list_events で確かめてから答えます。記憶や推測で答えません。
@@ -824,7 +837,8 @@ const store = {
 };
 const settings = Object.assign(
   { apiKey: "", voiceURI: "", rate: 1.1, pitch: 1.0, autoListen: false, model: "haiku", autoResetMin: 60, showTiming: true, diagLog: false,
-    ttsEngine: "browser", asrEngine: "auto", fishRelayUrl: "", googleClientId: "", googleMapsKey: "", fishApiKey: "", fishVoice: "45c5d3723c9c42f598e4776dcfd5f02d", fishVoiceCustom: "" },
+    ttsEngine: "browser", asrEngine: "auto", fishRelayUrl: "", googleClientId: "", googleMapsKey: "", fishApiKey: "", fishVoice: "45c5d3723c9c42f598e4776dcfd5f02d", fishVoiceCustom: "",
+    homeDataUrl: "https://junia2009.github.io/smart_home_db/" },
   store.get("pallas.settings", {})
 );
 // API に送る会話履歴。アシスタントの応答は content ブロックをそのまま保存する（thinking ブロックも含めて変更しない）
@@ -902,6 +916,17 @@ const TOOLS = [
     name: "end_conversation",
     description: "マスターが会話を終えたがっているとき（「もういいよ」「終わり」「またね」「おやすみ」「ちょっと静かにして」など）に呼ぶ。返事のあと、自動で聞き取りを再開しないようにする。",
     input_schema: { type: "object", properties: {}, additionalProperties: false },
+  },
+  {
+    name: "home_environment",
+    description: "マスターの家（リビング）の室温・湿度・明るさ・電力を、SwitchBot の記録から調べる。今の状態、今日や最近の最高・最低・平均、快適かどうか、プラグの消費電力と電気代がわかる。結果はグラフつきのカードでも画面に出る。",
+    input_schema: {
+      type: "object",
+      properties: {
+        range: { type: "string", enum: ["now", "today", "24h", "7days"], description: "調べる期間。今の状態だけなら now。省略で now" },
+      },
+      additionalProperties: false,
+    },
   },
   {
     name: "search_knowledge",
@@ -1365,6 +1390,158 @@ const bgmUnlock = () => {
 document.addEventListener("pointerdown", bgmUnlock, { passive: true });
 document.addEventListener("keydown", bgmUnlock);
 
+
+// ===== おうちの環境（smart_home_db の記録：温湿度・照度・電力）=====
+// SwitchBot の記録が GitHub Pages に JSON で公開されているので、それを読む。判定の基準は smart_home_db と同じ
+let homeCache = { at: 0, data: null };
+function homeBase() {
+  const u = (settings.homeDataUrl || "").trim();
+  return u ? u.replace(/\/?$/, "/") : "";
+}
+async function homeFetch(path) {
+  try { const r = await fetch(homeBase() + path, { cache: "no-cache" }); return r.ok ? await r.json() : null; } catch { return null; }
+}
+const ymKey = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+async function loadHome(force = false) {
+  if (!homeBase()) return null;
+  if (!force && homeCache.data && Date.now() - homeCache.at < 5 * 60000) return homeCache.data;
+  const now = new Date(), prev = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+  const [cfg, cur, old, pcur, pold] = await Promise.all([
+    homeFetch("config.json"), homeFetch(`data/${ymKey(now)}.json`), homeFetch(`data/${ymKey(prev)}.json`),
+    homeFetch(`data/power-${ymKey(now)}.json`), homeFetch(`data/power-${ymKey(prev)}.json`),
+  ]);
+  const recs = [...(old || []), ...(cur || [])].filter((r) => r && typeof r.temp === "number").sort((a, b) => a.t - b.t);
+  if (!recs.length) return null;
+  const power = [...(pold || []), ...(pcur || [])].filter((r) => r && Array.isArray(r.plugs)).sort((a, b) => a.t - b.t);
+  homeCache = { at: Date.now(), data: { cfg: cfg || {}, recs, power } };
+  return homeCache.data;
+}
+// 不快指数・絶対湿度（smart_home_db の alerts.mjs と同じ式）
+const homeDI = (t, h) => 0.81 * t + 0.01 * h * (0.99 * t - 14.3) + 46.3;
+const homeVH = (t, rh) => (217 * (6.1078 * Math.pow(10, (7.5 * t) / (t + 237.3)) * (rh / 100))) / (t + 273.15);
+function homeIssues(cfg, r) {
+  const month = new Date(r.t * 1000).getMonth() + 1;
+  const season = (cfg.seasons?.summerMonths || [5, 6, 7, 8, 9, 10]).includes(month) ? "summer" : "winter";
+  const th = cfg.thresholds?.[season] || {};
+  const di = homeDI(r.temp, r.hum), vh = homeVH(r.temp, r.hum), out = [];
+  if (th.tempHigh != null && r.temp > th.tempHigh) out.push("室温が高い");
+  if (th.tempLow != null && r.temp < th.tempLow) out.push("室温が低い");
+  if (th.humHigh != null && r.hum >= th.humHigh) out.push("湿度が高い");
+  if (th.humLow != null && r.hum < th.humLow) out.push("湿度が低い");
+  if (th.diHigh != null && di >= th.diHigh) out.push("不快指数が高い");
+  if (th.vhLow != null && vh < th.vhLow) out.push("乾燥している");
+  return { di, vh, issues: out };
+}
+// 発言の先頭に付ける短い情報（記録が新しいときだけ）
+function homeTag() {
+  const d = homeCache.data;
+  if (!d) return "";
+  const r = d.recs[d.recs.length - 1];
+  if (Date.now() / 1000 - r.t > 3 * 3600) return "";
+  const { issues } = homeIssues(d.cfg, r);
+  return `\n[室内（${d.cfg.roomName || "リビング"}）: ${r.temp.toFixed(1)}℃・湿度${Math.round(r.hum)}%${issues.length ? `・${issues.join("・")}` : ""}]`;
+}
+// 消費電力（W）を時間で積み上げて kWh にする。間が 1 時間以上あいたところは数えない
+function homeKwh(power, from) {
+  let wh = 0;
+  for (let i = 1; i < power.length; i++) {
+    const a = power[i - 1], b = power[i];
+    if (b.t < from) continue;
+    const dt = (b.t - Math.max(a.t, from)) / 3600;
+    if (dt <= 0 || dt > 1) continue;
+    const wa = a.plugs.reduce((x, p) => x + (p.w || 0), 0), wb = b.plugs.reduce((x, p) => x + (p.w || 0), 0);
+    wh += ((wa + wb) / 2) * dt;
+  }
+  return wh / 1000;
+}
+async function homeTool(input) {
+  if (!homeBase()) return { error: "おうちの環境データのURLが設定されていない（設定の「連携」タブ）" };
+  const d = await loadHome(true);
+  if (!d) return { error: "環境データを読めなかった（URLか公開設定を確認してもらう）" };
+  const range = ["today", "24h", "7days"].includes(input?.range) ? input.range : "now";
+  const room = d.cfg.roomName || "リビング";
+  const last = d.recs[d.recs.length - 1];
+  const ageMin = Math.round((Date.now() / 1000 - last.t) / 60);
+  const { di, vh, issues } = homeIssues(d.cfg, last);
+  const hourAgo = [...d.recs].reverse().find((r) => r.t <= last.t - 3600);
+  const lines = [
+    `${room}の今（${ageMin}分前の記録）：${last.temp.toFixed(1)}℃、湿度${Math.round(last.hum)}%、絶対湿度${vh.toFixed(1)}g/m³、不快指数${Math.round(di)}${typeof last.lux === "number" ? `、明るさ${last.lux}lux` : ""}`,
+    issues.length ? `注意：${issues.join("、")}` : "状態：快適な範囲",
+  ];
+  if (hourAgo) { const dt = last.temp - hourAgo.temp; lines.push(`1時間で${dt >= 0 ? "+" : ""}${dt.toFixed(1)}℃`); }
+  if (ageMin > 120) lines.push(`記録が${Math.round(ageMin / 60)}時間止まっている。収集が止まっている可能性`);
+  const nowS = Date.now() / 1000;
+  const startOfToday = new Date(); startOfToday.setHours(0, 0, 0, 0);
+  const from = range === "today" ? startOfToday.getTime() / 1000 : range === "24h" ? nowS - 86400 : range === "7days" ? nowS - 7 * 86400 : nowS - 86400;
+  const span = d.recs.filter((r) => r.t >= from);
+  if (range !== "now" && span.length) {
+    const mx = span.reduce((a, b) => (b.temp > a.temp ? b : a)), mn = span.reduce((a, b) => (b.temp < a.temp ? b : a));
+    const avg = (k) => span.reduce((x, r) => x + r[k], 0) / span.length;
+    const when = (r) => { const t = new Date(r.t * 1000); return `${range === "7days" ? `${t.getMonth() + 1}/${t.getDate()} ` : ""}${t.getHours()}:${String(t.getMinutes()).padStart(2, "0")}`; };
+    lines.push(`期間の室温：最高${mx.temp.toFixed(1)}℃（${when(mx)}）、最低${mn.temp.toFixed(1)}℃（${when(mn)}）、平均${avg("temp").toFixed(1)}℃。湿度の平均${Math.round(avg("hum"))}%`);
+  }
+  if (d.power.length) {
+    const lp = d.power[d.power.length - 1];
+    lines.push(`プラグ：${lp.plugs.map((p) => `${p.name} ${p.on ? `ON ${p.w}W` : "OFF"}`).join("、")}`);
+    const kwh = homeKwh(d.power, range === "now" ? startOfToday.getTime() / 1000 : from);
+    const yen = d.cfg.power?.yenPerKwh;
+    lines.push(`${range === "now" ? "今日" : "期間"}の電力量 ${kwh.toFixed(2)}kWh${yen ? `（約${Math.round(kwh * yen)}円）` : ""}`);
+  }
+  showHomePanel(room, last, { di, vh, issues, ageMin }, d.recs.filter((r) => r.t >= (range === "7days" ? from : nowS - 86400)));
+  lines.push("画面にグラフつきのカードを出した");
+  return { result: lines.join("\n") };
+}
+function showHomePanel(room, last, st, span) {
+  openInfoPanel(`🏠 ${room}の環境`, (body) => {
+    const top = el("div", "info-item");
+    const main = el("div", "info-main");
+    const row = el("div", "route-sum");
+    row.appendChild(el("span", "big", `${last.temp.toFixed(1)}℃`));
+    row.appendChild(el("span", "big", `${Math.round(last.hum)}%`));
+    row.appendChild(el("span", "info-sub", `不快指数 ${Math.round(st.di)} ・ 絶対湿度 ${st.vh.toFixed(1)}g/m³${typeof last.lux === "number" ? ` ・ ${last.lux}lux` : ""} ・ ${st.ageMin}分前`));
+    main.appendChild(row);
+    const meta = el("div", "info-meta");
+    if (st.issues.length) st.issues.forEach((x) => meta.appendChild(el("span", "badge closed", x)));
+    else meta.appendChild(el("span", "badge open", "快適"));
+    main.appendChild(meta);
+    top.appendChild(main);
+    body.appendChild(top);
+    // 室温（線）と湿度（点線）のグラフ
+    if (span.length > 2) {
+      const wrap = el("div", "info-item");
+      const cv = document.createElement("canvas");
+      cv.className = "home-chart";
+      wrap.appendChild(cv);
+      body.appendChild(wrap);
+      requestAnimationFrame(() => drawHomeChart(cv, span));
+    }
+  });
+}
+function drawHomeChart(cv, span) {
+  const W = cv.clientWidth || 300, H = 120, dpr = Math.min(2, window.devicePixelRatio || 1);
+  cv.width = W * dpr; cv.height = H * dpr;
+  const c = cv.getContext("2d"); c.scale(dpr, dpr);
+  const t0 = span[0].t, t1 = span[span.length - 1].t || t0 + 1;
+  const xs = (t) => 30 + (W - 60) * (t - t0) / Math.max(1, t1 - t0);
+  const series = (k, col, dash) => {
+    const v = span.map((r) => r[k]), lo = Math.min(...v), hi = Math.max(...v), pad = Math.max(0.5, (hi - lo) * 0.15);
+    const ys = (x) => H - 18 - (H - 30) * (x - (lo - pad)) / ((hi + pad) - (lo - pad));
+    c.strokeStyle = col; c.lineWidth = 1.6; c.setLineDash(dash);
+    c.beginPath(); span.forEach((r, i) => (i ? c.lineTo(xs(r.t), ys(r[k])) : c.moveTo(xs(r.t), ys(r[k])))); c.stroke();
+    c.setLineDash([]);
+    return { lo, hi };
+  };
+  const tr = series("temp", "#ffb46a", []), hr = series("hum", "#7cc4ff", [4, 3]);
+  c.font = "11px system-ui, sans-serif";
+  c.fillStyle = "#ffb46a"; c.fillText(`${tr.hi.toFixed(1)}℃`, 0, 12); c.fillText(`${tr.lo.toFixed(1)}℃`, 0, H - 20);
+  c.fillStyle = "#7cc4ff"; c.textAlign = "right"; c.fillText(`${Math.round(hr.hi)}%`, W, 12); c.fillText(`${Math.round(hr.lo)}%`, W, H - 20);
+  c.fillStyle = "rgba(200,210,230,.6)"; c.textAlign = "center";
+  const lab = (t) => { const d = new Date(t * 1000); return t1 - t0 > 2 * 86400 ? `${d.getMonth() + 1}/${d.getDate()}` : `${d.getHours()}時`; };
+  [t0, (t0 + t1) / 2, t1].forEach((t) => c.fillText(lab(t), xs(t), H - 2));
+}
+// 起動時と 10 分ごとに読み込んでおく（発言に今の室温を添えるため）
+setTimeout(() => loadHome(), 2000);
+setInterval(() => loadHome(), 10 * 60000);
 
 // ===== 知識（RAG） =====
 // 公開時に GitHub Actions が knowledge/ の資料から作った索引（knowledge-index.json）を読み、
@@ -2512,6 +2689,7 @@ const PLACE_NAMES = {
 // 道具を実行して結果の文字列を返す（入力は念のため自分でも検証する）
 async function runTool(name, input) {
   if (name === "music") return musicTool(input);
+  if (name === "home_environment") return homeTool(input);
   if (name === "calendar_list_events") return calendarList(input);
   if (name === "calendar_add_event") return calendarAdd(input);
   if (name === "calendar_delete_event") return calendarDelete(input);
@@ -2993,7 +3171,7 @@ function dedupeReply(text) {
 // 返事の中の（）書き（「（会話を終了しました）」のような注釈や動作の説明）は、読み上げにも表示にも出さない。
 // 閉じていない（ のあとも、閉じるまでは出さない
 // アプリが発言の先頭に付けている情報（[呼び名: …] など）を、パラスがまねして書いてしまったときに取り除く
-const META_TAG_RE = /\[(?:呼び名|現在日時|景色|現在地|設定中のタイマー|やること|Google|今日はじめて|資料からの抜粋|パラスの記憶|パラスの記録|気分)[^\]]*\]?/g;
+const META_TAG_RE = /\[(?:呼び名|現在日時|景色|現在地|設定中のタイマー|やること|Google|今日はじめて|資料からの抜粋|パラスの記憶|パラスの記録|気分|室内)[^\]]*\]?/g;
 function stripParens(text) {
   let depth = 0, out = "";
   for (const ch of String(text).replace(META_TAG_RE, "")) {
@@ -3516,7 +3694,8 @@ async function send(text, { hidden = false } = {}) {
   // 朝はじめての会話なら、返事の最初に朝のあいさつを添えてもらう
   let morningTag = "";
   if (!hidden && morningDue()) { morningTag = "\n[今日はじめての会話（朝）]"; markMorningDone(); }
-  const userText = `[現在日時: ${nowLabel()}]${place}${tb ? "\n" + tb : ""}${td ? "\n" + td : ""}${gtag}${ntag}${morningTag}\n${text}`;
+  const htag = homeTag();
+  const userText = `[現在日時: ${nowLabel()}]${place}${tb ? "\n" + tb : ""}${td ? "\n" + td : ""}${gtag}${htag}${ntag}${morningTag}\n${text}`;
   // 会話の最初だけ、これまでの記憶を添える（途中で前のメッセージを書き換えないため）
   // 会話の最初だけ、記憶と記録（数字）を添える
   const mem = history.length ? "" : [memoryBlock(), statsBlock()].filter(Boolean).join("\n\n");
@@ -3739,6 +3918,7 @@ function syncSettingsForm() {
   $("googleClientId").value = settings.googleClientId || "";
   syncNameField();
   $("googleMapsKey").value = settings.googleMapsKey || "";
+  $("homeDataUrl").value = settings.homeDataUrl || "";
   renderGoogleStatus();
   preloadGis();
   $("morningGreeting").checked = settings.morningGreeting !== false;
@@ -3938,6 +4118,7 @@ $("settingsForm").addEventListener("submit", (e) => {
   }
   if (settings.googleMapsKey !== $("googleMapsKey").value.trim()) gmapsReady = null; // キーが変わったら読み込み直す
   settings.googleMapsKey = $("googleMapsKey").value.trim();
+  if (settings.homeDataUrl !== $("homeDataUrl").value.trim()) { settings.homeDataUrl = $("homeDataUrl").value.trim(); homeCache = { at: 0, data: null }; loadHome(); }
   settings.morningGreeting = $("morningGreeting").checked;
   settings.bgmVolume = Number($("bgmVolume").value);
   if (settings.bgmStyle !== $("bgmStyle").value) {
