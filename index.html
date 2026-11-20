@@ -590,6 +590,20 @@
         <input id="homeDataUrl" type="text" placeholder="https://（GitHub Pages の公開URL）/smart_home_db/" autocomplete="off">
         <div class="hint">SwitchBot で記録している室温・湿度・照度・電力を、パラスが読めるようにします。空欄にすると使いません。</div>
       </div>
+      <h3 class="set-sec">ごみ出し（東久留米）</h3>
+      <div class="field">
+        <label for="gomiArea">収集の地区</label>
+        <select id="gomiArea">
+          <option value="">未設定（パラスに町名を話すと設定されます）</option>
+          <option value="east">東地区（上の原・神宝町・金山町・氷川台・大門町・東本町・新川町・浅間町・学園町・ひばりが丘団地・本町・南沢・中央町）</option>
+          <option value="west">西地区（小山・幸町・前沢・南町・滝山・下里・柳窪・野火止・八幡町・弥生）</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="gomiUrl">ごみナビ（higashikurume_gomi）のURL</label>
+        <input id="gomiUrl" type="text" placeholder="https://（GitHub Pages の公開URL）/higashikurume_gomi/" autocomplete="off">
+        <div class="hint">東久留米ごみナビの収集日と分別のデータを、パラスが読めるようにします。空欄にすると使いません。</div>
+      </div>
     </section>
     <section class="set-panel" data-panel="memory" hidden>
       <div class="field">
@@ -772,6 +786,14 @@ const PALLAS_SYSTEM_PROMPT = `あなたは「パラス」。マスター専属�
 - [今日はじめての会話（朝）] が付いていたら、返事の最初に短く朝のあいさつを添えてから、話に答えます。
 - 朝の報告は2〜3文にします。今日のやること（特に期限が今日・明日のもの）、設定中のタイマー、記憶から思い当たることを先回りして伝えます。何もなければ、あいさつと一言だけにします。
 
+# ごみ出し（東久留米市）
+- 発言の先頭に [ごみ（〇地区）: 今日 …／明日 …] があれば、それがマスターの家の今日と明日のごみの収集です。「明日何ごみ？」にはこれで答えます。収集は朝8時30分まで。
+- 「〇〇は何ごみ？」「電池どうやって捨てる？」には garbage の item で調べ、区分と次に出せる日を一言で伝えます。データにないことを推測で断定しません。
+- [ごみ] がなく、ごみの話になったら、住んでいる町名を一度だけ聞いて garbage の set_area で登録します。
+- 夜（18時以降）の会話で、明日が収集日なら、流れの中で一度だけ短く添えてかまいません（「明日は燃やせるごみの日です」）。毎回は言いません。
+- 朝の報告では、8時30分前なら今日出せるごみを一言添えます。
+- 祝日の収集は確認が取れていないので、祝日に当たるときは「念のため確認を」と添えます。
+
 # おうちの環境
 - 発言の先頭に [室内（リビング）: …] があれば、それはマスターの家の今の室温と湿度です（SwitchBot の記録。15分ごとに更新）。「暑い」「寒い」「乾燥してる？」などには、これを根拠に答えます。
 - 推移、今日の最高・最低、電気代などを聞かれたら home_environment で調べます。画面にグラフつきのカードが出るので、声では要点だけ伝えます。
@@ -838,7 +860,8 @@ const store = {
 const settings = Object.assign(
   { apiKey: "", voiceURI: "", rate: 1.1, pitch: 1.0, autoListen: false, model: "haiku", autoResetMin: 60, showTiming: true, diagLog: false,
     ttsEngine: "browser", asrEngine: "auto", fishRelayUrl: "", googleClientId: "", googleMapsKey: "", fishApiKey: "", fishVoice: "45c5d3723c9c42f598e4776dcfd5f02d", fishVoiceCustom: "",
-    homeDataUrl: "https://junia2009.github.io/smart_home_db/" },
+    homeDataUrl: "https://junia2009.github.io/smart_home_db/",
+    gomiUrl: "https://junia2009.github.io/higashikurume_gomi/", gomiArea: "" },
   store.get("pallas.settings", {})
 );
 // API に送る会話履歴。アシスタントの応答は content ブロックをそのまま保存する（thinking ブロックも含めて変更しない）
@@ -916,6 +939,22 @@ const TOOLS = [
     name: "end_conversation",
     description: "マスターが会話を終えたがっているとき（「もういいよ」「終わり」「またね」「おやすみ」「ちょっと静かにして」など）に呼ぶ。返事のあと、自動で聞き取りを再開しないようにする。",
     input_schema: { type: "object", properties: {}, additionalProperties: false },
+  },
+  {
+    name: "garbage",
+    description: "東久留米市のごみ出し（東久留米ごみナビのデータ）。ある日に出せるごみ、品目の分別と次に出せる日、区分ごとの次の収集日を調べる。マスターの住む地区の設定もこれで行う。",
+    input_schema: {
+      type: "object",
+      properties: {
+        action: { type: "string", enum: ["day", "item", "next", "set_area"], description: "day：その日に出せるごみ。item：品目の分別と次に出せる日。next：区分の次の収集日。set_area：住んでいる町名（または東地区・西地区）を登録" },
+        date: { type: "string", description: "day のとき：today / tomorrow / YYYY-MM-DD。省略で today" },
+        query: { type: "string", description: "item のとき：品目名（例：電池、フライパン、ペットボトルのキャップ）" },
+        category: { type: "string", enum: ["burnable", "non_burnable", "plastic", "pet", "bin", "can", "paper_cloth", "hazardous"], description: "next のとき：区分" },
+        town: { type: "string", description: "set_area のとき：町名（例：滝山）または「東地区」「西地区」" },
+      },
+      required: ["action"],
+      additionalProperties: false,
+    },
   },
   {
     name: "home_environment",
@@ -1390,6 +1429,118 @@ const bgmUnlock = () => {
 document.addEventListener("pointerdown", bgmUnlock, { passive: true });
 document.addEventListener("keydown", bgmUnlock);
 
+
+// ===== ごみ出し（東久留米ごみナビ：higashikurume_gomi）=====
+// ごみナビのロジック（assets/logic.js）とデータをそのまま読み込み、判定をそろえる
+let gomi = null, gomiLoading = null;
+function gomiBase() { const u = (settings.gomiUrl || "").trim(); return u ? u.replace(/\/?$/, "/") : ""; }
+function loadGomi() {
+  if (!gomiBase()) return Promise.resolve(null);
+  if (gomi) return Promise.resolve(gomi);
+  if (gomiLoading) return gomiLoading;
+  const base = gomiBase();
+  const logic = window.GomiLogic ? Promise.resolve(window.GomiLogic) : new Promise((resolve) => {
+    const sc = document.createElement("script");
+    sc.src = base + "assets/logic.js";
+    sc.onload = () => resolve(window.GomiLogic || null);
+    sc.onerror = () => resolve(null);
+    document.head.appendChild(sc);
+  });
+  const j = (p) => fetch(base + p, { cache: "no-cache" }).then((r) => (r.ok ? r.json() : null)).catch(() => null);
+  gomiLoading = Promise.all([logic, j("data/items.json"), j("data/items_supplement.json"), j("data/schedule.json"), j("data/special_days.json")])
+    .then(([L, items, sup, schedule, special]) => {
+      gomiLoading = null;
+      if (!L || !schedule) return null;
+      // 補完データは、同じ名前の品目が本データにないものだけ足す
+      const main = items?.items || [], names = new Set(main.map((x) => x.name));
+      const all = main.concat((sup?.items || []).filter((x) => !names.has(x.name)));
+      gomi = { L, items: all, schedule, special: special || {} };
+      return gomi;
+    });
+  return gomiLoading;
+}
+const gomiLabels = (g, cats) => cats.map((c) => g.L.CATEGORIES[c]?.label || c);
+function gomiDay(g, date) {
+  const info = g.L.categoriesOn(date, settings.gomiArea, g.schedule, g.special);
+  return { info, labels: gomiLabels(g, info.categories) };
+}
+// 発言の先頭に付ける「今日と明日のごみ」
+function gomiTag() {
+  if (!gomi || !settings.gomiArea || !gomi.schedule.areas[settings.gomiArea]) return "";
+  const now = new Date(), g = gomi;
+  const t = gomiDay(g, now), m = gomiDay(g, g.L.addDays(now, 1));
+  const fmt = (x) => (x.info.noCollection ? "収集なし" : x.labels.length ? x.labels.join("・") : "なし") + (x.info.holiday ? "（祝日）" : "");
+  const late = g.L.isAfterCutoff(now) ? "・8時30分を過ぎた" : "";
+  return `\n[ごみ（${g.schedule.areas[settings.gomiArea].label}）: 今日 ${fmt(t)}${t.labels.length ? late : ""}／明日 ${fmt(m)}]`;
+}
+async function gomiTool(input) {
+  if (!gomiBase()) return { error: "ごみナビのURLが設定されていない（設定の「連携」タブ）" };
+  const g = await loadGomi();
+  if (!g) return { error: "ごみナビのデータを読めなかった" };
+  const L = g.L, act = input?.action;
+  if (act === "set_area") {
+    const town = String(input.town || "").trim();
+    let key = /東/.test(town) && /地区/.test(town) ? "east" : /西/.test(town) && /地区/.test(town) ? "west" : L.areaForTown(town.replace(/(町|市)?$/, (x) => x), g.schedule);
+    if (!key) for (const k of Object.keys(g.schedule.areas)) if (g.schedule.areas[k].towns.some((t) => town.includes(t) || t.includes(town))) key = k;
+    if (!key) return { error: `「${town}」がどちらの地区かわからない。東地区：${g.schedule.areas.east.towns.join("・")}。西地区：${g.schedule.areas.west.towns.join("・")}` };
+    settings.gomiArea = key; store.set("pallas.settings", settings);
+    return { result: `${g.schedule.areas[key].label}に設定した` };
+  }
+  if (!settings.gomiArea || !g.schedule.areas[settings.gomiArea]) return { error: "収集の地区が未設定。マスターに住んでいる町名を聞いて、set_area で登録する" };
+  const now = new Date(), after = L.isAfterCutoff(now);
+  const nextOf = (cat) => {
+    const r = L.nextCollectionDate(cat, settings.gomiArea, now, g.schedule, g.special, { includeFromDate: !after });
+    return r ? `${L.relativeLabel(r.daysFromNow)}・${L.formatDateJa(r.date)}${r.holiday ? "（祝日：収集があるか念のため確認）" : ""}` : "60日以内に収集日なし";
+  };
+  if (act === "item") {
+    const q = String(input.query || "").trim();
+    if (!q) return { error: "query が空" };
+    const hits = L.searchItems(g.items, q, 5);
+    if (!hits.length) return { result: `「${q}」は品目データに見つからなかった。別の言い方で探すか、市のごみサクで確認してもらう` };
+    showGomiPanel(`🗑 「${q}」の出し方`, hits.map((it) => ({ it, next: L.CATEGORIES[it.category]?.kind === "scheduled" ? nextOf(it.category) : "" })), g);
+    return {
+      result: hits.map((it) => {
+        const c = L.CATEGORIES[it.category] || { label: it.category }, info = L.CATEGORY_INFO[it.category] || {};
+        return `- ${it.name}：${c.label}${c.kind === "scheduled" ? `（次は${nextOf(it.category)}）` : ""}${it.note ? `。${it.note.replace(/[。\s]+$/, "").slice(0, 140)}` : ""}${info.howto?.length ? `。出し方：${info.howto.slice(0, 2).join("、")}` : ""}`;
+      }).join("\n") + "\n画面に一覧を出した",
+    };
+  }
+  if (act === "next") {
+    const c = L.CATEGORIES[input.category];
+    if (!c) return { error: "category が不正" };
+    return { result: `${c.label}の次の収集は${nextOf(input.category)}` };
+  }
+  // day
+  const ds = String(input?.date || "today");
+  const date = ds === "tomorrow" ? L.addDays(now, 1) : /^\d{4}-\d{2}-\d{2}$/.test(ds) ? L.fromISODate(ds) : now;
+  const { info, labels } = gomiDay(g, date);
+  const isToday = L.toISODate(date) === L.toISODate(now);
+  const parts = [`${L.formatDateJa(date)}（${g.schedule.areas[settings.gomiArea].label}）：${info.noCollection ? "収集なし" : labels.length ? labels.join("、") : "収集なし"}`];
+  if (info.holiday && labels.length) parts.push("祝日。収集があるかは念のため市の案内で確認");
+  if (info.note) parts.push(info.note.text);
+  if (isToday && labels.length) parts.push(after ? "今日の収集時刻（8時30分）は過ぎている。もう収集された可能性" : "朝8時30分までに出す");
+  return { result: parts.join("。") };
+}
+function showGomiPanel(title, rows, g) {
+  openInfoPanel(title, (body) => {
+    for (const { it, next } of rows) {
+      const c = g.L.CATEGORIES[it.category] || { label: it.category, color: "#999" };
+      const item = el("div", "info-item");
+      const main = el("div", "info-main");
+      main.appendChild(el("div", "info-name", it.name));
+      const meta = el("div", "info-meta");
+      const chip = el("span", "badge", c.label);
+      chip.style.color = c.color; chip.style.borderColor = c.color;
+      meta.appendChild(chip);
+      if (next) meta.appendChild(el("span", null, `次は ${next}`));
+      main.appendChild(meta);
+      if (it.note) main.appendChild(el("div", "info-sub", it.note));
+      item.appendChild(main);
+      body.appendChild(item);
+    }
+  });
+}
+setTimeout(() => loadGomi(), 2500);
 
 // ===== おうちの環境（smart_home_db の記録：温湿度・照度・電力）=====
 // SwitchBot の記録が GitHub Pages に JSON で公開されているので、それを読む。判定の基準は smart_home_db と同じ
@@ -2690,6 +2841,7 @@ const PLACE_NAMES = {
 async function runTool(name, input) {
   if (name === "music") return musicTool(input);
   if (name === "home_environment") return homeTool(input);
+  if (name === "garbage") return gomiTool(input);
   if (name === "calendar_list_events") return calendarList(input);
   if (name === "calendar_add_event") return calendarAdd(input);
   if (name === "calendar_delete_event") return calendarDelete(input);
@@ -3171,7 +3323,7 @@ function dedupeReply(text) {
 // 返事の中の（）書き（「（会話を終了しました）」のような注釈や動作の説明）は、読み上げにも表示にも出さない。
 // 閉じていない（ のあとも、閉じるまでは出さない
 // アプリが発言の先頭に付けている情報（[呼び名: …] など）を、パラスがまねして書いてしまったときに取り除く
-const META_TAG_RE = /\[(?:呼び名|現在日時|景色|現在地|設定中のタイマー|やること|Google|今日はじめて|資料からの抜粋|パラスの記憶|パラスの記録|気分|室内)[^\]]*\]?/g;
+const META_TAG_RE = /\[(?:呼び名|現在日時|景色|現在地|設定中のタイマー|やること|Google|今日はじめて|資料からの抜粋|パラスの記憶|パラスの記録|気分|室内|ごみ)[^\]]*\]?/g;
 function stripParens(text) {
   let depth = 0, out = "";
   for (const ch of String(text).replace(META_TAG_RE, "")) {
@@ -3694,7 +3846,7 @@ async function send(text, { hidden = false } = {}) {
   // 朝はじめての会話なら、返事の最初に朝のあいさつを添えてもらう
   let morningTag = "";
   if (!hidden && morningDue()) { morningTag = "\n[今日はじめての会話（朝）]"; markMorningDone(); }
-  const htag = homeTag();
+  const htag = homeTag() + gomiTag();
   const userText = `[現在日時: ${nowLabel()}]${place}${tb ? "\n" + tb : ""}${td ? "\n" + td : ""}${gtag}${htag}${ntag}${morningTag}\n${text}`;
   // 会話の最初だけ、これまでの記憶を添える（途中で前のメッセージを書き換えないため）
   // 会話の最初だけ、記憶と記録（数字）を添える
@@ -3919,6 +4071,8 @@ function syncSettingsForm() {
   syncNameField();
   $("googleMapsKey").value = settings.googleMapsKey || "";
   $("homeDataUrl").value = settings.homeDataUrl || "";
+  $("gomiUrl").value = settings.gomiUrl || "";
+  $("gomiArea").value = settings.gomiArea || "";
   renderGoogleStatus();
   preloadGis();
   $("morningGreeting").checked = settings.morningGreeting !== false;
@@ -4118,6 +4272,8 @@ $("settingsForm").addEventListener("submit", (e) => {
   }
   if (settings.googleMapsKey !== $("googleMapsKey").value.trim()) gmapsReady = null; // キーが変わったら読み込み直す
   settings.googleMapsKey = $("googleMapsKey").value.trim();
+  settings.gomiArea = $("gomiArea").value;
+  if (settings.gomiUrl !== $("gomiUrl").value.trim()) { settings.gomiUrl = $("gomiUrl").value.trim(); gomi = null; loadGomi(); }
   if (settings.homeDataUrl !== $("homeDataUrl").value.trim()) { settings.homeDataUrl = $("homeDataUrl").value.trim(); homeCache = { at: 0, data: null }; loadHome(); }
   settings.morningGreeting = $("morningGreeting").checked;
   settings.bgmVolume = Number($("bgmVolume").value);
