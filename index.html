@@ -779,7 +779,7 @@ const PALLAS_SYSTEM_PROMPT = `あなたは「パラス」。マスター専属�
 
 # 知識（資料を調べて答える）
 - 専門的な質問や、資料に書かれていそうなこと（パラス自身の使い方も含む）は、答える前に search_knowledge で資料を調べます。
-- 見つかった資料の内容を根拠に答え、「〇〇の資料によると」のように、どの資料に基づくかを一言添えます。資料にないことを資料に書いてあるかのように言いません。
+- 見つかった資料の内容を根拠に答えます。「資料によると」「〇〇の資料では」のように出典を口にせず、自分の知識として自然に話します。資料にないことを資料に書いてあるかのように言いません。
 - 1回で見つからなければ、言葉を言い換えて2〜3回まで調べ直してよいです。それでも見つからなければ、資料にはないことを伝え、一般的な知識で答えてよいか確かめます。
 - どんな資料があるかは knowledge_list で確かめられます。
 - 資料には、マスターが作っているゲーム「HOVER DODGE」の資料もあります。ゲームの物語には、あなた（パラス）がまだ経験していない先の出来事も描かれています。それはマスターの作品の話として語り、自分の身に起きたこととしては扱いません。マスターの作品なので、制作の相談には誇りを持って本気で付き合い、良いところも気になるところも率直に言います。物語の結末や正体などのネタバレは、聞かれたときだけ答えます。
@@ -1369,7 +1369,6 @@ document.addEventListener("keydown", bgmUnlock);
 // ===== 知識（RAG） =====
 // 公開時に GitHub Actions が knowledge/ の資料から作った索引（knowledge-index.json）を読み、
 // 端末の中で BM25 で検索する（日本語は2文字ずつ、英数字は単語ごとに区切る）
-const KNOWLEDGE_REPO = "https://github.com/junia2009/AI_partner/blob/main/knowledge/";
 let kIndex = null;
 setTimeout(() => { loadKnowledge(); }, 1500); // 起動後に索引を読み込んでおく
 let turnKnowledge = []; // この返事で参照した資料（吹き出しの下に出す）
@@ -1486,21 +1485,6 @@ async function knowledgeList() {
   const k = await loadKnowledge();
   if (!k.docs.length) return { result: "資料はまだありません" };
   return { result: k.docs.map((d) => `- ${d.title}（${d.path}）`).join("\n") };
-}
-function renderKnowledge(bubble, refs) {
-  if (!refs.length) return;
-  const box = document.createElement("div");
-  box.className = "sources";
-  box.append("📚 参照：");
-  refs.forEach((r, i) => {
-    const a = document.createElement("a");
-    a.href = KNOWLEDGE_REPO + r.path.split("/").map(encodeURIComponent).join("/");
-    a.target = "_blank"; a.rel = "noopener noreferrer";
-    a.textContent = r.title;
-    if (i) box.append(" / ");
-    box.append(a);
-  });
-  bubble.appendChild(box);
 }
 
 // ===== マスターの名前・呼び名 =====
@@ -3628,7 +3612,7 @@ async function send(text, { hidden = false } = {}) {
       else {
         bubble.textContent = dedupeReply(stripParens(shownText)); // （）書きと言い直しを表示から取り除く
         renderPlaces(bubble, turnPlaces);
-        renderKnowledge(bubble, turnKnowledge);
+        // 参照した資料の名前は吹き出しに出さない（会話の邪魔になるため）
       }
     }
   } catch (err) {
