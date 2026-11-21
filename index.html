@@ -418,6 +418,7 @@
   <div class="timer-bar" id="timerBar"></div>
   <div class="todo-bar">
     <button type="button" class="timer-chip morning" id="morningChip" hidden>☀ 朝の報告を聞く</button>
+    <button type="button" class="timer-chip morning" id="nudgeChip" hidden>💬 パラスが何か言いたそうです</button>
     <button type="button" class="timer-chip" id="todoChip" hidden></button>
     <button type="button" class="timer-chip morning" id="googleChip" hidden>🔐 Googleに再接続</button>
     <div class="todo-panel" id="todoPanel" hidden>
@@ -487,6 +488,9 @@
       </div>
       <div class="field">
         <label class="check"><input id="morningGreeting" type="checkbox"> 朝（4〜12時）その日はじめて開いたら、パラスが朝の報告をする</label>
+      </div>
+      <div class="field">
+        <label class="check"><input id="nudges" type="checkbox"> パラスから話しかける（ごみの日の前の夜・部屋の環境・久しぶり・夜更かしのときに一言）</label>
       </div>
       <div class="field">
         <label for="autoReset">しばらく話さなかったら新しい会話にする</label>
@@ -785,6 +789,15 @@ const PALLAS_SYSTEM_PROMPT = `あなたは「パラス」。マスター専属�
 - [朝のあいさつ] が届いたら、あなたから朝のあいさつをします。マスターはまだ何も話していません。
 - [今日はじめての会話（朝）] が付いていたら、返事の最初に短く朝のあいさつを添えてから、話に答えます。
 - 朝の報告は2〜3文にします。今日のやること（特に期限が今日・明日のもの）、設定中のタイマー、記憶から思い当たることを先回りして伝えます。何もなければ、あいさつと一言だけにします。
+
+# 自分から話しかけるとき
+- 発言が [パラスから話しかける] で始まるときは、マスターはまだ何も言っていません。あなたから声をかける場面です。きっかけの内容を、一〜二文で自然に伝えます。
+- 「お知らせです」「通知します」のような機械的な言い方はしません。用件だけを、あなたらしく短く。答えを求める問いかけで終える必要はありません。
+  - 例（久しぶり）：「……三日ぶりですね。おかえりなさい」
+  - 例（ごみ）：「明日は燃やせるごみの日です。袋、出しておきますか」
+  - 例（部屋）：「少し乾燥しています。加湿器をつけましょうか」
+  - 例（夜更かし）：「もう二時です。続きは明日にしませんか」
+- 責めたり説教したりはしません。
 
 # ごみ出し（東久留米市）
 - 発言の先頭に [ごみ（〇地区）: 今日 …／明日 …] があれば、それがマスターの家の今日と明日のごみの収集です。「明日何ごみ？」にはこれで答えます。収集は朝8時30分まで。
@@ -4076,6 +4089,7 @@ function syncSettingsForm() {
   renderGoogleStatus();
   preloadGis();
   $("morningGreeting").checked = settings.morningGreeting !== false;
+  $("nudges").checked = settings.nudges !== false;
   $("ttsEngine").value = settings.ttsEngine;
   $("asrEngine").value = settings.asrEngine || "auto";
   $("fishVoice").value = FISH_VOICES.some(v => v.id === settings.fishVoice) || settings.fishVoice === "custom" ? settings.fishVoice : FISH_VOICES[0].id;
@@ -4115,6 +4129,60 @@ function renderTodos() {
     list.appendChild(li);
   }
 }
+// ===== パラスから話しかける =====
+// 待っているだけでなく、気づいたことをパラスから一言伝える。きっかけごとに 1 日 1 回まで、全体でも 2 時間に 1 回まで
+let userActivated = false, pendingNudge = null;
+const markActivated = () => { userActivated = true; };
+window.addEventListener("pointerdown", markActivated, { capture: true });
+window.addEventListener("keydown", markActivated, { capture: true });
+function nudgeLog() { return store.get("pallas.nudges", {}); }
+function nudgeDone(kind) { const l = nudgeLog(); l[kind] = Date.now(); l._last = Date.now(); store.set("pallas.nudges", l); }
+const isToday = (ts) => !!ts && new Date(ts).toDateString() === new Date().toDateString();
+function findNudge() {
+  if (settings.nudges === false || morningDue()) return null; // 朝は朝の報告に任せる
+  const log = nudgeLog(), now = new Date(), h = now.getHours();
+  if (log._last && Date.now() - log._last < 2 * 3600000) return null;
+  if (Date.now() - store.get("pallas.lastActivity", 0) < 3 * 60000) return null; // 話した直後は言わない
+  // 久しぶり（3 日以上あいた）
+  if (stats?.lastDay && !isToday(log.reunion)) {
+    const days = Math.round((new Date(ymd(now)) - new Date(stats.lastDay)) / 86400000);
+    if (days >= 3) return { kind: "reunion", reason: `マスターが${days}日ぶりにパラスを開いた` };
+  }
+  // 夜更かし
+  if (h >= 1 && h < 4 && !isToday(log.late)) return { kind: "late", reason: `もう深夜${h}時。マスターはまだ起きている` };
+  // 明日はごみの日（夜）
+  if (h >= 18 && gomi && settings.gomiArea && gomi.schedule.areas[settings.gomiArea] && !isToday(log.gomi)) {
+    const tm = gomiDay(gomi, gomi.L.addDays(now, 1));
+    if (tm.labels.length && !tm.info.noCollection) return { kind: "gomi", reason: `明日は${tm.labels.join("と")}の収集日（朝8時30分まで）${tm.info.holiday ? "。祝日なので念のため確認" : ""}` };
+  }
+  // 部屋の環境（4 時間に 1 回まで）
+  const hd = homeCache.data;
+  if (hd && (!log.home || Date.now() - log.home > 4 * 3600000)) {
+    const r = hd.recs[hd.recs.length - 1];
+    if (Date.now() / 1000 - r.t < 2 * 3600) {
+      const { issues } = homeIssues(hd.cfg, r);
+      if (issues.length) return { kind: "home", reason: `${hd.cfg.roomName || "リビング"}が${issues.join("・")}（${r.temp.toFixed(1)}℃、湿度${Math.round(r.hum)}%）` };
+    }
+  }
+  return null;
+}
+function deliverNudge(n) {
+  pendingNudge = null; $("nudgeChip").hidden = true;
+  nudgeDone(n.kind);
+  send(`[パラスから話しかける] きっかけ：${n.reason}`, { hidden: true });
+}
+function checkNudge() {
+  if (busy || recogActive || document.hidden || (document.body.dataset.state || "idle") !== "idle" || !settings.apiKey) return;
+  const n = findNudge();
+  if (!n) { pendingNudge = null; $("nudgeChip").hidden = true; return; }
+  // 画面に触れたあとなら、そのまま話しかける。開いた直後は音を出せないので、チップで知らせる
+  if (userActivated) deliverNudge(n);
+  else { pendingNudge = n; $("nudgeChip").hidden = false; }
+}
+$("nudgeChip").addEventListener("click", () => { if (pendingNudge && !busy) deliverNudge(pendingNudge); });
+setTimeout(checkNudge, 8000);           // データの読み込みを待ってから
+setInterval(checkNudge, 3 * 60000);
+document.addEventListener("visibilitychange", () => { if (!document.hidden) setTimeout(checkNudge, 4000); });
 function renderMorningChip() {
   const el = $("morningChip");
   if (el) el.hidden = !morningDue();
@@ -4276,6 +4344,7 @@ $("settingsForm").addEventListener("submit", (e) => {
   if (settings.gomiUrl !== $("gomiUrl").value.trim()) { settings.gomiUrl = $("gomiUrl").value.trim(); gomi = null; loadGomi(); }
   if (settings.homeDataUrl !== $("homeDataUrl").value.trim()) { settings.homeDataUrl = $("homeDataUrl").value.trim(); homeCache = { at: 0, data: null }; loadHome(); }
   settings.morningGreeting = $("morningGreeting").checked;
+  settings.nudges = $("nudges").checked;
   settings.bgmVolume = Number($("bgmVolume").value);
   if (settings.bgmStyle !== $("bgmStyle").value) {
     settings.bgmStyle = $("bgmStyle").value;
