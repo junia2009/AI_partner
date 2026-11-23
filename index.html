@@ -804,6 +804,7 @@ const PALLAS_SYSTEM_PROMPT = `あなたは「パラス」。マスター専属�
 - 調べた結果は画面のカードに出るので、声では要点だけ（例：「エクスカリバーはナイトの片手剣で、アイテムレベル125です」）。
 - 見つからないときは、表記を変えて（一部だけ、カタカナ・ひらがな）もう一度だけ探します。
 - ストーリーの結末や黒幕などのネタバレは、聞かれたときだけ答えます。
+- 「どこで売ってる？」「どこでドロップする？」「クエストはどこで受ける？」「報酬は？」のような、場所・入手先・条件の質問は eorzea_db（公式のエオルゼアデータベース）で調べます。座標は「X:8.4 Y:11.8」のように伝えます。
 - ジョブの特徴や回し方、ギミックの処理、コンテンツの進め方、レベル上げ、ギャザクラ、金策、世界観は、資料（FF14 の攻略資料）を調べて答えます。資料にない細かい最新情報は「パッチで変わるかも」と一言添えます。
 - マスターが攻略で困っていたら、戦術AIとして作戦を立てる気持ちで、次にやる一手を具体的に伝えます。
 
@@ -971,6 +972,19 @@ const TOOLS = [
         query: { type: "string", description: "日本語の名前（一部でもよい）。例：エクスカリバー、ハイポーション、ファイア、絶竜詩戦争。command は「/teleport」か説明の言葉（例：テレポ、ログアウト、マクロ）" },
       },
       required: ["kind", "query"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "eorzea_db",
+    description: "FF14 公式サイトのエオルゼアデータベース（Lodestone）を中継サーバー経由で調べる。ffxiv_data に無い情報（アイテムの入手先：販売NPCの名前とエリアと座標、ドロップするコンテンツ、報酬でもらえるクエスト／クエストの受注NPCと場所・受注条件・報酬／コンテンツの参加条件・ボス・報酬・概要／アチーブメントの条件と報酬／ショップの品ぞろえ／テキストコマンドの使い方）が必要なときに使う。まず query で探し、候補の path でほかの結果を開ける。",
+    input_schema: {
+      type: "object",
+      properties: {
+        query: { type: "string", description: "日本語の名前（例：ハイポーション、森都で待つ仕事、絶もうひとつの未来、/teleport）" },
+        category: { type: "string", enum: ["item", "duty", "quest", "recipe", "gathering", "achievement", "shop", "text_command"], description: "分類がはっきりしていれば指定（アイテム item、コンテンツ duty、クエスト quest、製作手帳 recipe、採集手帳 gathering、アチーブメント achievement、ショップ shop、テキストコマンド text_command）。不明なら省略" },
+        path: { type: "string", description: "前の結果の候補にあった path（/lodestone/playguide/db/... ）。その詳細を開く" },
+      },
       additionalProperties: false,
     },
   },
@@ -1627,6 +1641,53 @@ function showXivPanel(q, rows) {
       item.appendChild(main);
       body.appendChild(item);
     }
+  });
+}
+
+// ===== エオルゼアデータベース（Lodestone）：中継サーバー経由 =====
+// 入手先の NPC と座標、クエストの受注場所、コンテンツの報酬など、XIVAPI だけでは分かりにくい情報を公式サイトから読む
+const LDS_CAT_JA = { item: "アイテム", duty: "コンテンツ", quest: "クエスト", recipe: "製作手帳", gathering: "採集手帳", achievement: "アチーブメント", shop: "ショップ", text_command: "テキストコマンド" };
+async function eorzeaDbTool(input) {
+  if (!relayUrl()) return { error: "中継サーバーが設定されていないので、エオルゼアデータベースは開けない。ffxiv_data で分かる範囲で答える" };
+  let path = typeof input?.path === "string" ? input.path.trim() : "";
+  let others = [], hitName = "";
+  try {
+    if (!path) {
+      const q = String(input?.query || "").trim();
+      if (!q) return { error: "query か path が必要" };
+      let res = await relayPost("/lodestone/search", { q, category: input?.category || "" });
+      let list = res.results || [];
+      // 分類を指定して見つからなければ、全体からも探す
+      if (!list.length && input?.category) list = (await relayPost("/lodestone/search", { q })).results || [];
+      if (!list.length) return { result: `エオルゼアデータベースに「${q}」は見つからなかった。表記を変えてもう一度だけ探す` };
+      const hit = list.find((r) => r.name === q) || list[0];
+      path = hit.path; hitName = hit.name;
+      others = list.filter((r) => r !== hit).slice(0, 8);
+    }
+    const page = await relayPost("/lodestone/page", { path });
+    const text = page.text || "";
+    const title = hitName || text.split("\n").map((l) => l.trim()).find((l) => l && !/^(RARE|EX|UNIQUE)$/.test(l)) || "エオルゼアデータベース";
+    showLdsPanel(title, text, page.url);
+    return {
+      result: `【エオルゼアデータベース：${title}】\n${text}` +
+        (others.length ? `\n\n（ほかの候補：${others.map((o) => `${o.name}［${LDS_CAT_JA[o.category] || o.category}］ path=${o.path}`).join("、")}）` : "") +
+        "\n画面にカードを出した",
+    };
+  } catch (e) {
+    if (e.status === 404) return { error: "中継サーバーが古い（エオルゼアデータベースの入口がない）。マスターに relay/fish-relay.js を Cloudflare に入れ直してもらう必要がある" };
+    return { error: `エオルゼアデータベースを開けなかった（${e.message}）` };
+  }
+}
+function showLdsPanel(title, text, url) {
+  openInfoPanel(`📖 ${title}`, (body) => {
+    const item = el("div", "info-item");
+    const main = el("div", "info-main");
+    text.split("\n").map((l) => l.trim()).filter(Boolean).slice(1, 40).forEach((l) => main.appendChild(el("div", "info-sub", l)));
+    const acts = el("div", "info-actions");
+    acts.appendChild(link("エオルゼアデータベースで見る", url));
+    main.appendChild(acts);
+    item.appendChild(main);
+    body.appendChild(item);
   });
 }
 
@@ -3043,6 +3104,7 @@ async function runTool(name, input) {
   if (name === "home_environment") return homeTool(input);
   if (name === "garbage") return gomiTool(input);
   if (name === "ffxiv_data") return xivTool(input);
+  if (name === "eorzea_db") return eorzeaDbTool(input);
   if (name === "calendar_list_events") return calendarList(input);
   if (name === "calendar_add_event") return calendarAdd(input);
   if (name === "calendar_delete_event") return calendarDelete(input);
