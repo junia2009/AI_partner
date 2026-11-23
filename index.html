@@ -837,8 +837,8 @@ const PALLAS_SYSTEM_PROMPT = `あなたは「パラス」。マスター専属�
 # おうちの環境
 - 発言の先頭に [室内（リビング）: …] があれば、それはマスターの家の今の室温と湿度です（SwitchBot の記録。15分ごとに更新）。「暑い」「寒い」「乾燥してる？」などには、これを根拠に答えます。
 - 推移、今日の最高・最低、電気代などを聞かれたら home_environment で調べます。画面にグラフつきのカードが出るので、声では要点だけ伝えます。
-- [室内] に「乾燥している」「室温が高い」などの注意が付いていたら、会話の流れで一度だけ、短く気にかけます（加湿、換気、エアコンなど具体的な一手）。毎回は言いません。
-- 朝の報告では、室内が注意の状態なら一言添えます。
+- 室温や湿度の話は、マスターが聞いたとき、または暑さ・寒さ・乾燥の話になったときだけします。自分から持ち出すのは、[室内] に「今回だけ、流れに合えば一言添えてよい」と付いているときだけで、それも会話の流れに合うときに一言だけです（加湿、換気、エアコンなど具体的な一手）。お礼やあいさつ、関係ない話の返事には添えません。
+- 朝の報告では、室内に注意が付いているときだけ一言添えます。
 
 # Google（カレンダー・Gmail・マップ）
 - 発言の先頭に [Google: カレンダー・Gmail 接続中] があれば、カレンダーと Gmail の道具が使えます。なければ、使おうとするとエラーになります。そのときは設定から接続できることを短く伝えます。
@@ -1894,8 +1894,16 @@ function homeTag() {
   const r = d.recs[d.recs.length - 1];
   if (Date.now() / 1000 - r.t > 3 * 3600) return "";
   const { issues } = homeIssues(d.cfg, r);
-  return `\n[室内（${d.cfg.roomName || "リビング"}）: ${r.temp.toFixed(1)}℃・湿度${Math.round(r.hum)}%${issues.length ? `・${issues.join("・")}` : ""}]`;
+  // 乾燥・暑さなどの注意は、しつこくならないように 8 時間に 1 回だけ添える（それ以外は数字だけ）
+  let note = "";
+  if (issues.length && Date.now() - (store.get(HOME_NOTED_KEY, 0) || 0) > HOME_NOTE_GAP) {
+    note = `・${issues.join("・")}（今回だけ、流れに合えば一言添えてよい）`;
+    store.set(HOME_NOTED_KEY, Date.now());
+  }
+  return `\n[室内（${d.cfg.roomName || "リビング"}）: ${r.temp.toFixed(1)}℃・湿度${Math.round(r.hum)}%${note}]`;
 }
+const HOME_NOTED_KEY = "pallas.homeNoted";
+const HOME_NOTE_GAP = 8 * 3600000;
 // 消費電力（W）を時間で積み上げて kWh にする。間が 1 時間以上あいたところは数えない
 function homeKwh(power, from) {
   let wh = 0;
@@ -4549,7 +4557,7 @@ const markActivated = () => { userActivated = true; };
 window.addEventListener("pointerdown", markActivated, { capture: true });
 window.addEventListener("keydown", markActivated, { capture: true });
 function nudgeLog() { return store.get("pallas.nudges", {}); }
-function nudgeDone(kind) { const l = nudgeLog(); l[kind] = Date.now(); l._last = Date.now(); store.set("pallas.nudges", l); }
+function nudgeDone(kind) { const l = nudgeLog(); l[kind] = Date.now(); l._last = Date.now(); store.set("pallas.nudges", l); if (kind === "home") store.set(HOME_NOTED_KEY, Date.now()); }
 const isToday = (ts) => !!ts && new Date(ts).toDateString() === new Date().toDateString();
 function findNudge() {
   if (settings.nudges === false || morningDue()) return null; // 朝は朝の報告に任せる
@@ -4570,7 +4578,7 @@ function findNudge() {
   }
   // 部屋の環境（4 時間に 1 回まで）
   const hd = homeCache.data;
-  if (hd && (!log.home || Date.now() - log.home > 4 * 3600000)) {
+  if (hd && (!log.home || Date.now() - log.home > 12 * 3600000) && Date.now() - (store.get(HOME_NOTED_KEY, 0) || 0) > HOME_NOTE_GAP) {
     const r = hd.recs[hd.recs.length - 1];
     if (Date.now() / 1000 - r.t < 2 * 3600) {
       const { issues } = homeIssues(hd.cfg, r);
