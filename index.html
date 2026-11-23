@@ -800,7 +800,7 @@ const PALLAS_SYSTEM_PROMPT = `あなたは「パラス」。マスター専属�
 - 責めたり説教したりはしません。
 
 # FF14（ファイナルファンタジーXIV）
-- アイテム・装備の性能・レシピ・スキル・クエスト・マウント・ミニオン・アチーブメント・コンテンツの事実（名前、数値、レベル、素材、入手方法）は、必ず ffxiv_data で調べてから答えます。記憶や推測で数値を言いません。
+- アイテム・装備の性能・レシピ・スキル・特性・クエスト・マウント・ミニオン・アチーブメント・コンテンツ・テキストコマンド・エモート・バフやデバフ・FATE・リーヴ・オーケストリオン譜・トリプルトライアドのカード・魚・採集品の事実（名前、数値、レベル、素材、入手方法、コマンドの書き方）は、必ず ffxiv_data で調べてから答えます。記憶や推測で数値を言いません。
 - 調べた結果は画面のカードに出るので、声では要点だけ（例：「エクスカリバーはナイトの片手剣で、アイテムレベル125です」）。
 - 見つからないときは、表記を変えて（一部だけ、カタカナ・ひらがな）もう一度だけ探します。
 - ストーリーの結末や黒幕などのネタバレは、聞かれたときだけ答えます。
@@ -963,12 +963,12 @@ const TOOLS = [
   },
   {
     name: "ffxiv_data",
-    description: "FF14（ファイナルファンタジーXIV）のゲームデータを XIVAPI で調べる。アイテム（装備性能・アイテムレベル・入手方法の手がかり）、レシピ（素材）、スキル（効果・詠唱・リキャスト）、クエスト、マウント、ミニオン、アチーブメント、コンテンツ（必要レベル・種類）。数値や名前は推測せず必ずこれで確かめる。結果は画面のカードにも出る。",
+    description: "FF14（ファイナルファンタジーXIV）のゲームデータ（エオルゼアデータベースと同じ公式データ）を XIVAPI で調べる。アイテム（装備性能・アイテムレベル・入手方法の手がかり）、レシピ（素材）、スキル（効果・詠唱・リキャスト）、特性、クエスト、マウント、ミニオン、アチーブメント、コンテンツ（必要レベル・種類）、テキストコマンド（/teleport など。日本語の説明の言葉でも探せる）、エモート、ステータス（バフ・デバフ）、FATE、リーヴ、オーケストリオン譜（入手方法）、トリプルトライアドのカード、ファッションアクセサリー、魚（釣り場・説明）、採集品。数値や名前は推測せず必ずこれで確かめる。結果は画面のカードにも出る。",
     input_schema: {
       type: "object",
       properties: {
-        kind: { type: "string", enum: ["item", "recipe", "action", "quest", "mount", "minion", "achievement", "content"], description: "調べる種類。装備や消耗品は item、作り方は recipe、スキルは action、討滅戦・レイド・ダンジョンは content" },
-        query: { type: "string", description: "日本語の名前（一部でもよい）。例：エクスカリバー、ハイポーション、ファイア、絶竜詩戦争" },
+        kind: { type: "string", enum: ["item", "recipe", "action", "trait", "quest", "mount", "minion", "achievement", "content", "command", "emote", "status", "fate", "leve", "orchestrion", "card", "accessory", "fish", "gathering"], description: "調べる種類。装備や消耗品は item、作り方は recipe、スキルは action、特性は trait、討滅戦・レイド・ダンジョンは content、/で始まる命令や「〇〇するコマンド」は command、バフ・デバフは status、トリプルトライアドは card、魚の釣り場は fish" },
+        query: { type: "string", description: "日本語の名前（一部でもよい）。例：エクスカリバー、ハイポーション、ファイア、絶竜詩戦争。command は「/teleport」か説明の言葉（例：テレポ、ログアウト、マクロ）" },
       },
       required: ["kind", "query"],
       additionalProperties: false,
@@ -1491,7 +1491,30 @@ const XIV_KIND = {
   minion: { sheet: "Companion", field: "Singular", fields: "Singular" },
   achievement: { sheet: "Achievement", field: "Name", fields: "Name,Description,Points,AchievementCategory.Name" },
   content: { sheet: "ContentFinderCondition", field: "Name", fields: "Name,ClassJobLevelRequired,ItemLevelRequired,ContentType.Name" },
+  command: { sheet: "TextCommand", field: "Command", fields: "Command,ShortCommand,Alias,ShortAlias,Description" },
+  emote: { sheet: "Emote", field: "Name", fields: "Name,TextCommand.Command,EmoteCategory.Name" },
+  status: { sheet: "Status", field: "Name", fields: "Name,Description" },
+  trait: { sheet: "Trait", field: "Name", fields: "Name,ClassJob.Name,Level" },
+  fate: { sheet: "Fate", field: "Name", fields: "Name,ClassJobLevel,Description" },
+  leve: { sheet: "Leve", field: "Name", fields: "Name,ClassJobLevel,ClassJobCategory.Name,Description" },
+  orchestrion: { sheet: "Orchestrion", field: "Name", fields: "Name,Description" },
+  card: { sheet: "TripleTriadCard", field: "Name", fields: "Name,Description" },
+  accessory: { sheet: "Ornament", field: "Singular", fields: "Singular" },
+  fish: { sheet: "FishParameter", field: "Item.Name", fields: "Item.Name,Text,IsHidden,TerritoryType.PlaceName.Name" },
+  gathering: { sheet: "GatheringItem", field: "Item.Name", fields: "Item.Name,GatheringItemLevel.GatheringItemLevel" },
 };
+// テキストコマンドは「/teleport」のような英字で探すか、説明文（日本語）の言葉で探す
+async function xivSearchCommand(q, fields) {
+  const esc = q.replace(/"/g, "").trim();
+  if (/^[\/a-z0-9 ]+$/i.test(esc)) {
+    const c = esc.replace(/^\/?/, "/").toLowerCase();
+    let res = await xivGet("search", { sheets: "TextCommand", query: `Command="${c}" ShortCommand="${c}" Alias="${c}" ShortAlias="${c}"`, fields, limit: 5 });
+    if (!res.results?.length) res = await xivGet("search", { sheets: "TextCommand", query: `Command~"${c}"`, fields, limit: 5 });
+    return res.results || [];
+  }
+  const res = await xivGet("search", { sheets: "TextCommand", query: `Description@ja~"${esc}"`, fields, limit: 6 });
+  return res.results || [];
+}
 // 1 件ぶんを、パラス向けの文章と、カード用の行にする
 async function xivDescribe(kind, r) {
   const f = r.fields, out = { name: "", sub: [], text: "" };
@@ -1535,6 +1558,36 @@ async function xivDescribe(kind, r) {
   } else if (kind === "achievement") {
     out.name = f.Name;
     out.sub = [`${xn(f.AchievementCategory)}・${f.Points}pt`, f.Description || ""].filter(Boolean);
+  } else if (kind === "command") {
+    out.name = [f.Command, f.ShortCommand, f.Alias, f.ShortAlias].filter(Boolean).filter((v, i, a) => a.indexOf(v) === i).join(" ／ ");
+    out.sub = [(f.Description || "").replace(/^\/\S+\s*/, "").replace(/\s+/g, " ").slice(0, 300)];
+  } else if (kind === "emote") {
+    out.name = f.Name;
+    out.sub = [[xn(f.EmoteCategory), f.TextCommand?.fields?.Command].filter(Boolean).join("・")];
+  } else if (kind === "status") {
+    out.name = f.Name;
+    out.sub = [(f.Description || "").replace(/\s+/g, " ").slice(0, 200)];
+  } else if (kind === "trait") {
+    out.name = f.Name;
+    let desc = "";
+    try { desc = (await xivGet(`sheet/TraitTransient/${r.row_id}`, { fields: "Description" })).fields?.Description || ""; } catch {}
+    out.sub = [[xn(f.ClassJob), f.Level ? `Lv${f.Level}` : ""].filter(Boolean).join("・"), desc.replace(/\s+/g, " ").slice(0, 240)].filter(Boolean);
+  } else if (kind === "fate" || kind === "leve") {
+    out.name = f.Name;
+    out.sub = [[f.ClassJobLevel ? `Lv${f.ClassJobLevel}` : "", xn(f.ClassJobCategory)].filter(Boolean).join("・"), (f.Description || "").replace(/\s+/g, " ").slice(0, 160)].filter(Boolean);
+  } else if (kind === "orchestrion" || kind === "card") {
+    out.name = f.Name;
+    out.sub = [(f.Description || "").replace(/\s+/g, " ").slice(0, 200)].filter(Boolean);
+    if (kind === "orchestrion" && out.sub.length) out.sub[0] = "入手：" + out.sub[0];
+  } else if (kind === "accessory") {
+    out.name = f.Singular;
+  } else if (kind === "fish") {
+    out.name = xn(f.Item);
+    out.sub = [[f.TerritoryType?.fields?.PlaceName?.fields?.Name, f.IsHidden ? "（釣り手帳の隠し魚）" : ""].filter(Boolean).join(""), (f.Text || "").replace(/\s+/g, " ").slice(0, 160)].filter(Boolean);
+  } else if (kind === "gathering") {
+    out.name = xn(f.Item);
+    const lv = f.GatheringItemLevel?.fields?.GatheringItemLevel;
+    out.sub = [lv ? `採集レベル${lv}` : ""].filter(Boolean);
   } else if (kind === "content") {
     out.name = f.Name;
     out.sub = [[xn(f.ContentType), f.ClassJobLevelRequired ? `Lv${f.ClassJobLevelRequired}` : "", f.ItemLevelRequired ? `IL${f.ItemLevelRequired}以上` : ""].filter(Boolean).join("・")];
@@ -1549,14 +1602,15 @@ async function xivTool(input) {
   const K = XIV_KIND[kind];
   let rows;
   try {
-    rows = await xivSearch(K.sheet, K.field, q, K.fields, 6);
+    rows = kind === "command" ? await xivSearchCommand(q, K.fields) : await xivSearch(K.sheet, K.field, q, K.fields, 6);
     // スキルは、プレイヤーのものがあればそれだけにする（敵の同名スキルを除く）
     if (kind === "action" && rows.some((r) => r.fields.IsPlayerAction)) rows = rows.filter((r) => r.fields.IsPlayerAction);
   } catch (e) { return { error: `XIVAPI に接続できなかった（${e.message}）` }; }
-  rows = rows.filter((r) => xn({ fields: r.fields }) || r.fields.ItemResult);
+  rows = rows.filter((r) => xn({ fields: r.fields }) || r.fields.ItemResult || r.fields.Item || r.fields.Command);
   if (!rows.length) return { result: `「${q}」は見つからなかった。表記を変えて（カタカナ・ひらがな、一部だけ）もう一度探す` };
   const top = rows.slice(0, kind === "item" ? 3 : 5);
-  const desc = await Promise.all(top.map((r) => xivDescribe(kind, r)));
+  // 同じ内容の行（ステータスや FATE は同名が多い）は1つにまとめる
+  const desc = (await Promise.all(top.map((r) => xivDescribe(kind, r)))).filter((d, i, a) => a.findIndex((x) => x.text === d.text) === i);
   showXivPanel(q, desc);
   return { result: desc.map((d) => d.text).join("\n") + "\n画面にカードを出した" };
 }
@@ -1568,7 +1622,7 @@ function showXivPanel(q, rows) {
       main.appendChild(el("div", "info-name", d.name));
       d.sub.forEach((t) => main.appendChild(el("div", "info-sub", t)));
       const acts = el("div", "info-actions");
-      acts.appendChild(link("エオルゼアデータベース", `https://jp.finalfantasyxiv.com/lodestone/playguide/db/search/?q=${encodeURIComponent(d.name.replace(/ ×\d+$/, ""))}`));
+      acts.appendChild(link("エオルゼアデータベース", `https://jp.finalfantasyxiv.com/lodestone/playguide/db/search/?q=${encodeURIComponent(d.name.replace(/ ×\d+$/, "").split(" ／ ")[0])}`));
       main.appendChild(acts);
       item.appendChild(main);
       body.appendChild(item);
