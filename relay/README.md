@@ -106,3 +106,8 @@ Cloudflare の Worker の **Settings → Variables and Secrets** に、種類「
 ### 5. パラスの設定
 「Google 連携」にクライアントIDを入れて保存し、「Googleに接続」を押す。
 「このアプリは Google で確認されていません」と出たら「詳細」→「パラス（安全ではないページ）に移動」で進み、すべての項目にチェックを入れて許可する。
+
+## エオルゼアデータベース（FF14）
+- `/lodestone/search` と `/lodestone/page` で、FF14 公式サイトのエオルゼアデータベースを読みます（鍵や設定は不要）。
+- この機能を使うには、最新の `fish-relay.js` を Cloudflare の Worker に貼り直して「デプロイ」してください。
+- 読むのはデータベースの検索結果と詳細ページだけです。同じページは Cloudflare 側に1日キャッシュします。

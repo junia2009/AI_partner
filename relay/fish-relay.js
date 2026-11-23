@@ -6,6 +6,8 @@
 //   /maps/search     : Google マップのお店・場所検索（Places API）
 //   /maps/route      : Google マップの経路検索（Routes API）。行き方・所要時間
 //                      電車・バスは、RAPIDAPI_KEY があれば NAVITIME の乗換検索を使う（Google の API は日本の電車に非対応）
+//   /lodestone/search : FF14 公式サイト「エオルゼアデータベース」の検索（ブラウザから直接は読めないため中継）
+//   /lodestone/page   : エオルゼアデータベースの詳細ページ（入手先・販売NPCと座標・報酬・ドロップなど）を文字にして返す
 // 設置方法は relay/README.md を参照。
 
 // パラスを開くページのURL（オリジン）。ここ以外からの呼び出しは断る
@@ -47,6 +49,8 @@ export default {
     if (url.pathname === "/google/token") return googleToken(request, env, cors);
     if (url.pathname === "/maps/search") return mapsSearch(request, env, cors);
     if (url.pathname === "/maps/route") return mapsRoute(request, env, cors);
+    if (url.pathname === "/lodestone/search") return lodestoneSearch(request, cors);
+    if (url.pathname === "/lodestone/page") return lodestonePage(request, cors);
     if (!Object.hasOwn(FISH_ROUTES, url.pathname)) {
       return json({ status: 404, message: "not found" }, 404, cors);
     }
@@ -345,3 +349,79 @@ function json(body, status, cors) {
     headers: { ...cors, "Content-Type": "application/json" },
   });
 }
+
+// ===== エオルゼアデータベース（FF14 公式・Lodestone）=====
+// 鍵は不要。読むのはデータベースの検索結果と詳細ページだけ（パスを限定）。同じページは1日キャッシュする
+const LDS = "https://jp.finalfantasyxiv.com";
+const LDS_CATS = ["item", "duty", "quest", "recipe", "gathering", "achievement", "shop", "text_command"];
+async function ldsFetch(path) {
+  const cache = caches.default;
+  const key = new Request(LDS + path);
+  let res = await cache.match(key);
+  if (!res) {
+    res = await fetch(LDS + path, { headers: { "User-Agent": "Mozilla/5.0 (AI Pallas relay)", "Accept-Language": "ja" } });
+    if (!res.ok) return { status: res.status, html: "" };
+    res = new Response(await res.text(), { headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "max-age=86400" } });
+    await cache.put(key, res.clone());
+  }
+  return { status: 200, html: await res.text() };
+}
+function ldsText(html) {
+  return html
+    .replace(/<script[\s\S]*?<\/script>|<style[\s\S]*?<\/style>/g, "")
+    .replace(/<(br|tr|li|p|div|h[1-6])[^>]*>/gi, "\n")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&nbsp;/g, " ").replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&#(\d+);/g, (_, n) => (n === "8288" ? "" : String.fromCharCode(+n)))
+    .replace(/[ \t]+/g, " ").replace(/\n\s*(\n\s*)+/g, "\n").trim();
+}
+async function lodestoneSearch(request, cors) {
+  let body;
+  try { body = await request.json(); } catch { body = {}; }
+  const q = typeof body.q === "string" ? body.q.trim().slice(0, 60) : "";
+  if (!q) return json({ status: 400, message: "q が必要です" }, 400, cors);
+  const cat = LDS_CATS.includes(body.category) ? body.category : "";
+  const path = `/lodestone/playguide/db/${cat ? cat + "/" : "search/"}?q=${encodeURIComponent(q)}`;
+  const { status, html } = await ldsFetch(path);
+  if (status !== 200) return json({ status, message: "エオルゼアデータベースを開けませんでした" }, 502, cors);
+  const seen = new Set(), results = [];
+  const re = /href="(\/lodestone\/playguide\/db\/([a-z_]+)\/([0-9a-f]{6,})\/)"[^>]*db-table__txt--detail_link[^>]*>([^<]+)</g;
+  let m;
+  while ((m = re.exec(html)) && results.length < 12) {
+    if (seen.has(m[1])) continue;
+    seen.add(m[1]);
+    results.push({ path: m[1], category: m[2], name: m[4].replace(/&#8288;/g, "").replace(/&amp;/g, "&").trim() });
+  }
+  return json({ results }, 200, cors);
+}
+async function lodestonePage(request, cors) {
+  let body;
+  try { body = await request.json(); } catch { body = {}; }
+  const path = typeof body.path === "string" ? body.path : "";
+  if (!/^\/lodestone\/playguide\/db\/[a-z_]+\/[0-9a-f]{6,}\/$/.test(path)) return json({ status: 400, message: "path が不正です" }, 400, cors);
+  const { status, html } = await ldsFetch(path);
+  if (status !== 200) return json({ status, message: "エオルゼアデータベースを開けませんでした" }, 502, cors);
+  // 本文だけ（コメント欄・埋め込みコードの説明より前）
+  let main = html;
+  const starts = ["db__l_main", "db-view__detail", "db-command__detail"].map((k) => html.indexOf(k)).filter((i) => i >= 0);
+  if (starts.length) main = html.slice(Math.min(...starts));
+  for (const stop of ["名称をクリップボードにコピー", "コメント（", "コミュニティウォール"]) {
+    const i = main.indexOf(stop);
+    if (i > 0) main = main.slice(0, i);
+  }
+  let text = ldsText(main).replace(/^[^\n]*(db__l_main|db-view__detail|db-command__detail)[^\n]*\n?/, "");
+  // 製作手帳など、コピー欄より後ろにある大事な表は別に拾う
+  const extra = [];
+  const rec = html.indexOf("このアイテムの製作手帳");
+  if (rec > 0) extra.push(ldsText(html.slice(rec, html.indexOf("コメント（", rec) > 0 ? html.indexOf("コメント（", rec) : rec + 3000)));
+  // 機種ごとに同じ説明が並ぶページがあるので、長い行の重複は1つにする
+  const seenLine = new Set();
+  text = [text, ...extra].join("\n").split("\n").filter((l) => {
+    const k = l.trim();
+    if (k.length < 8) return true;
+    if (seenLine.has(k)) return false;
+    seenLine.add(k);
+    return true;
+  }).join("\n").slice(0, 7000);
+  return json({ path, url: LDS + path, text }, 200, cors);
+}
+
