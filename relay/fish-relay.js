@@ -372,7 +372,46 @@ function ldsText(html) {
     .replace(/<(br|tr|li|p|div|h[1-6])[^>]*>/gi, "\n")
     .replace(/<[^>]+>/g, " ")
     .replace(/&nbsp;/g, " ").replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&#(\d+);/g, (_, n) => (n === "8288" ? "" : String.fromCharCode(+n)))
+    .replace(/[\ue000-\uf8ff]/g, "")
     .replace(/[ \t]+/g, " ").replace(/\n\s*(\n\s*)+/g, "\n").trim();
+}
+// 詳細ページ用：表の1行・項目と値・リストの1項目を、それぞれ1行にまとめた文字にする
+// 見出しは「■ 」で始める（画面側で見出しとして表示する）
+function ldsStructured(html) {
+  const strip = (s) => ldsText(s).replace(/\s+/g, " ").trim();
+  let h = html
+    .replace(/<script[\s\S]*?<\/script>|<style[\s\S]*?<\/style>|<img[^>]*>/g, "")
+    .replace(/<br\s*\/?>/gi, " ");
+  // いちばん内側の <li> から順に、中身を1行にする（入れ子は親の行にまとまる）
+  for (let i = 0; i < 6; i++) {
+    const n = h.replace(/<li[^>]*>((?:(?!<li[\s>])[\s\S])*?)<\/li>/gi, (_, x) => `\u0001${strip(x)}\u0002`);
+    if (n === h) break;
+    h = n;
+  }
+  h = h.replace(/\u0002\s*\u0001/g, "\u0002\u0001");
+  // 項目と値（dt / dd）
+  h = h.replace(/<dt[^>]*>([\s\S]*?)<\/dt>\s*<dd[^>]*>([\s\S]*?)<\/dd>/gi, (_, k, v) => `\n${strip(k)}：${strip(v)}\n`);
+  // 表の1行（見出しセルだけの行は見出しにする）
+  h = h.replace(/<tr[^>]*>([\s\S]*?)<\/tr>/gi, (_, row) => {
+    const cells = [...row.matchAll(/<(td|th)[^>]*>([\s\S]*?)<\/\1>/gi)].map((m) => ({ th: m[1].toLowerCase() === "th", t: strip(m[2].replace(/\u0001|\u0002/g, " ")) })).filter((c) => c.t);
+    if (!cells.length) return "\n";
+    if (cells.every((c) => c.th)) return `\n■ ${cells.map((c) => c.t).join(" ／ ")}\n`;
+    return `\n${cells.map((c) => c.t).join(" ／ ")}\n`;
+  });
+  // 見出し
+  h = h.replace(/<(h[2-5])[^>]*>([\s\S]*?)<\/\1>/gi, (_, t, x) => `\n${t === "h2" ? "" : "■ "}${strip(x)}\n`);
+  h = h.replace(/\u0001/g, "\n").replace(/\u0002/g, "\n");
+  const out = [];
+  for (let line of ldsText(h).split("\n")) {
+    line = line.replace(/\s+/g, " ").trim();
+    if (!line || /^(0|>|DATA|INFORMATION|■ DATA|■ INFORMATION)$/.test(line)) continue;
+    if (/^[0 ／]+$/.test(line)) continue;
+    // 座標や個数だけの行は、前の行につなげる
+    if (out.length && /^(X:[\d.]+ Y:[\d.]+.*|[\d,]+)$/.test(line) && !out[out.length - 1].startsWith("■")) { out[out.length - 1] += " " + line; continue; }
+    if (out[out.length - 1] === line) continue;
+    out.push(line);
+  }
+  return out.join("\n");
 }
 async function lodestoneSearch(request, cors) {
   let body;
@@ -408,11 +447,13 @@ async function lodestonePage(request, cors) {
     const i = main.indexOf(stop);
     if (i > 0) main = main.slice(0, i);
   }
-  let text = ldsText(main).replace(/^[^\n]*(db__l_main|db-view__detail|db-command__detail)[^\n]*\n?/, "");
+  // 先頭の中途半端なタグ（class="…" の途中から切ったもの）を落とす
+  main = main.slice(main.indexOf(">") + 1);
+  let text = ldsStructured(main);
   // 製作手帳など、コピー欄より後ろにある大事な表は別に拾う
   const extra = [];
   const rec = html.indexOf("このアイテムの製作手帳");
-  if (rec > 0) extra.push(ldsText(html.slice(rec, html.indexOf("コメント（", rec) > 0 ? html.indexOf("コメント（", rec) : rec + 3000)));
+  if (rec > 0) extra.push("■ " + ldsStructured(html.slice(rec, html.indexOf("コメント（", rec) > 0 ? html.indexOf("コメント（", rec) : rec + 3000)));
   // 機種ごとに同じ説明が並ぶページがあるので、長い行の重複は1つにする
   const seenLine = new Set();
   text = [text, ...extra].join("\n").split("\n").filter((l) => {
