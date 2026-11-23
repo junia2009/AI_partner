@@ -115,6 +115,9 @@
   - 優先順位はギミック処理＞生き残る＞攻撃を止めない＞ポジショナル。全部外しても損は5%未満。
 
 ### 竜騎士の開幕
+- 標準の開幕（The Balance の開幕図、パッチ 7.1 版。「＋」はその GCD の後に差し込むアビリティ）：
+  - カウント15でイルーシブジャンプ（Elusive Jump）で下がり、カウント0.85でピアシングタロン（Piercing Talon）。
+  - トゥルースラスト（True Thrust）＋薬 → スパイラルブロウ（Spiral Blow）＋ランスチャージ（Lance Charge）＋バトルリタニー → 桜華繚乱（Chaotic Spring）＋ゲイルスコグル → 竜尾大車輪（Wheeling Thrust）＋ハイジャンプ＋ライフサージ（Life Surge）→ 雲蒸竜変（Drakesbane）＋ドラゴンダイブ＋ナーストレンド（Nastrond）→ 竜眼雷電（Raiden Thrust）＋スターダイバー（Stardiver）→ スラストラッシュ（Lance Barrage）＋スタークロッサー（Starcross）＋ライフサージ → ヘヴンスラスト（Heavens' Thrust）＋ドラゴンライズ（Rise of the Dragon）＋ミラージュダイブ（Mirage Dive）→ 竜牙竜爪（Fang and Claw）→ 雲蒸竜変 → 竜眼雷電＋天竜点睛（Wyrmwind Thrust）。
 - 基本の開幕：桜華繚乱で継続ダメージを入れた後にバトルリタニー（Battle Litany）を使う。他のバフはその前後に置き、ゲイルスコグル（Geirskogul）はバフの最後に使う。
 - バフを桜華繚乱の前後どちらで使っても差は小さい。最後の天竜点睛のために後ろ寄りが少し良い。
 - 開幕で使うバフ、ハイジャンプ（High Jump）、ドラゴンダイブ（Dragonfire Dive）の位置が、その後の戦闘全体の挟む位置を決める。
@@ -181,6 +184,9 @@
   - 風纏のためと使いは順番に融通がきく。取りやすい位置に合わせて選ぶ。
 
 ### 忍者の開幕
+- 標準の開幕（百雷銃を4 GCD 目）（The Balance の開幕図、パッチ 7.0 版。「＋」はその GCD の後に差し込むアビリティ）：
+  - カウント6.5で天の印（Ten）、6で地の印（Chi）、5.5で人の印（Jin）、0.9で水遁の術を撃つ。戦闘開始と同時に活殺自在（Kassatsu）。
+  - 双刃旋（Spinning Edge）＋薬 → 風断ち（Gust Slash）＋毒盛の術（Dokumori）＋分身の術（Bunshin）→ 残影鎌鼬（Phantom Kamaitachi）→ 強甲破点突（Armor Crush）＋百雷銃（Kunai's Bane）→ 氷晶乱流の術（Hyosho Ranryu）＋夢幻三段（Dream Within a Dream）→ 雷遁の術＋天地人（Ten Chi Jin）→ 天地人で風魔手裏剣（Fuma Shuriken）→ 雷遁の術 → 水遁の術＋命水（Meisui）→ 月影雷獣牙（Fleeting Raiju）＋是生滅法（Zesho Meppo）＋天理人道（Tenri Jindo）→ 月影雷獣牙＋六道輪廻（Bhavacakra）→ 雷遁の術 → 月影雷獣牙。
 - 水遁の術（Suiton）はカウント6秒前に準備を始め、約0.9秒前に撃つ。印のリキャストが早く戻り、開幕後の百雷銃に雷遁の術（Raiton）を2回入れられる。
 - 水遁の術で忍隠（Shadow Walker）が付き、百雷銃が使えるようになる。
 - 毒盛の術は分身の術の都合で開幕の早い段階に使う。他の人のバフとそろえるため、1 GCD 遅らせるのが理想。
