@@ -352,6 +352,14 @@
   .info-main { flex: 1; min-width: 0; }
   .info-name { font-size: 15px; font-weight: 600; word-break: break-word; }
   .info-sub { font-size: 12px; color: var(--muted); margin-top: 2px; line-height: 1.6; word-break: break-word; }
+  /* エオルゼアデータベースのカード：見出し・項目と値・本文 */
+  .lds-sub { font-size: 12.5px; color: var(--muted); margin-bottom: 6px; }
+  .lds-h { font-size: 12px; font-weight: 600; letter-spacing: .06em; color: var(--hud, #7ad7ff); margin: 12px 0 4px; padding-bottom: 3px; border-bottom: 1px solid var(--line); }
+  .lds-kv { display: grid; grid-template-columns: minmax(84px, 36%) 1fr; gap: 2px 10px; font-size: 13px; line-height: 1.6; }
+  .lds-kv .k { color: var(--muted); }
+  .lds-row { font-size: 13px; line-height: 1.6; padding: 2px 0; word-break: break-word; }
+  .lds-row .loc { color: var(--muted); font-size: 12px; }
+  .lds-note { font-size: 11.5px; color: var(--muted); line-height: 1.6; }
   .info-meta { display: flex; flex-wrap: wrap; gap: 6px 10px; font-size: 12px; margin-top: 4px; align-items: center; }
   .info-meta .star { color: #ffd58a; }
   .badge { font-size: 11px; padding: 1px 7px; border-radius: 999px; border: 1px solid; }
@@ -1684,7 +1692,32 @@ function showLdsPanel(title, text, url) {
   openInfoPanel(`📖 ${title}`, (body) => {
     const item = el("div", "info-item");
     const main = el("div", "info-main");
-    text.split("\n").map((l) => l.trim()).filter(Boolean).slice(1, 40).forEach((l) => main.appendChild(el("div", "info-sub", l)));
+    const lines = text.split("\n").map((l) => l.trim()).filter(Boolean);
+    // 名前の行は見出しに出ているので省き、その直後の短い行（レベル・種類）は小さく出す
+    let i = lines.findIndex((l) => l === title);
+    i = i >= 0 ? i + 1 : 0;
+    const subs = [];
+    while (i < lines.length && !lines[i].startsWith("■") && !lines[i].includes("：") && lines[i].length <= 24 && subs.length < 3) subs.push(lines[i++]);
+    if (subs.length) main.appendChild(el("div", "lds-sub", subs.join("・")));
+    let kv = null;
+    for (const l of lines.slice(i, i + 120)) {
+      if (l.startsWith("■")) { kv = null; main.appendChild(el("div", "lds-h", l.replace(/^■\s*/, ""))); continue; }
+      const m = l.includes(" ／ ") ? null : l.match(/^([^：]{1,16})：(.+)$/);
+      if (m) {
+        if (!kv) { kv = el("div", "lds-kv"); main.appendChild(kv); }
+        kv.appendChild(el("div", "k", m[1]));
+        kv.appendChild(el("div", "v", m[2]));
+        continue;
+      }
+      kv = null;
+      if (l.startsWith("※")) { main.appendChild(el("div", "lds-note", l)); continue; }
+      const row = el("div", "lds-row");
+      // 「名前 ／ 場所 X:… Y:…」は、場所を小さく
+      const parts = l.split(" ／ ");
+      row.appendChild(document.createTextNode(parts[0].replace(/^.*> \S+：\S+ /, "")));
+      if (parts.length > 1) { row.appendChild(document.createTextNode("　")); row.appendChild(el("span", "loc", parts.slice(1).join("・"))); }
+      main.appendChild(row);
+    }
     const acts = el("div", "info-actions");
     acts.appendChild(link("エオルゼアデータベースで見る", url));
     main.appendChild(acts);
