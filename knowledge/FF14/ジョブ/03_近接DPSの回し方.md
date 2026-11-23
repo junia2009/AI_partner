@@ -29,6 +29,9 @@
   - ダブルルナー型（Double Lunar）：陰の闘気をわざと重ねる。夢幻闘舞を2分バーストに寄せられる。
 - どちらにもバフを5秒で入れる型と7秒で入れる型がある。パーティの都合に合わせる。多くの編成は5秒型を好む。
 - 討伐時間が分からないときは、ソーラー・ルナー型かダブルルナー型を選ぶ。
+- ソーラー・ルナー型・7秒バフの例（The Balance の図、パッチ 7.0 版。「＋」はその GCD の後に差し込むアビリティ）：
+  - 双竜脚（Dragon Kick）＋踏鳴（Perfect Balance）＋陰陽闘気斬（the Forbidden Chakra）→ 双掌打（Twin Snakes）＋薬 → 猿舞連撃（Leaping Opo）→ 破砕拳（Demolish）＋桃園結義（Brotherhood）＋紅蓮の極意（Riddle of Fire）→ 鳳凰の舞（Rising Phoenix）＋疾風の極意（Riddle of Wind）→ 双竜脚 → 乾坤闘気弾（Fire's Reply）→ 絶空拳（Wind's Reply）→ 猿舞連撃＋踏鳴 → 双竜脚 → 猿舞連撃 → 双竜脚 → 真空波（Elixir Burst）→ 猿舞連撃 → 双掌打。
+  - 薬は2つ目の GCD の後。桃園結義と紅蓮の極意は4つ目の GCD の後に重ねる。
 
 ### モンクのバースト（2分）
 - 紅蓮の極意と桃園結義はリキャストごとに使い、ずらさない。
@@ -253,6 +256,9 @@
 - その後すぐに大きなアビリティを全部使い、リキャストを回し始める。必殺剣・閃影（Hissatsu: Senei）、意気衝天（Ikishoten）、燕返し2回、明鏡止水の2回目。
 - 明鏡止水を使うと天道（Tendo）が付き、次の乱れ雪月花が天道雪月花（Tendo Setsugekka）になる。必ずクリティカル。パーティのバフの中で撃つ。
 - 燕返しは天道返し雪月花（Tendo Kaeshi Setsugekka）か返し雪月花（Kaeshi: Setsugekka）として出る。
+- 標準の開幕（The Balance の図、パッチ 7.05 版。「＋」はその GCD の後に差し込むアビリティ）：
+  - カウント14で明鏡止水、カウント5でトゥルーノース（True North）。
+  - 月光（Gekko）＋薬 → 花車（Kasha）＋意気衝天 → 雪風（Yukikaze）→ 天道雪月花＋必殺剣・閃影 → 天道返し雪月花＋明鏡止水 → 月光＋残心（Zanshin）→ 彼岸花（Higanbana）→ 奥義波切（Ogi Namikiri）＋照破（Shoha）→ 返し波切（Kaeshi: Namikiri）→ 花車＋必殺剣・震天（Hissatsu: Shinten）→ 月光＋必殺剣・暁天（Hissatsu: Gyoten）→ 暁風（Gyofu）→ 雪風＋必殺剣・震天 → 天道雪月花 → 天道返し雪月花。
 
 ### 侍のバースト（2分）
 - 侍の回しは120秒で1周する。開幕、待ちの時間（クールダウン期）、バーストの3つに分かれる。
@@ -399,6 +405,14 @@
   - 参の牙【背裂】（Hindsbane Fang）：背面。
   - 成功で、双剣の締めは威力60、双刃の技は威力50上がる。
   - 双剣のコンボは必ず背面と側面が交互になる。双刃のコンボはどちらを先にするか選べる。
+
+### ヴァイパーの開幕
+- 標準の開幕（The Balance の図、パッチ 7.5 版。「＋」はその GCD の後に差し込むアビリティ）：
+  - カウント0.5で蛇行（Slither）でボスに近づく。
+  - 壱の牙【咬創】（Steel Fangs）か壱の牙【穿裂】（Reaving Fangs）＋蛇の霊気（Serpent's Ire）→ 弐の牙【疾速】（Swiftskin's Sting）→ 壱の蛇【強砕】（Vicewinder）＋薬 → 弐の蛇【猛襲】（Hunter's Coil）＋双牙連撃（Twinfang Bite）＋双牙乱撃（Twinblood Bite）→ 弐の蛇【疾速】（Swiftskin's Coil）＋双牙乱撃＋双牙連撃 → 祖霊降ろし（Reawaken）。
+  - 祖霊降ろしの中：祖霊の牙【壱】（First Generation）＋祖霊の蛇【壱】（First Legacy）→ 祖霊の牙【弐】＋祖霊の蛇【弐】→ 祖霊の牙【参】＋祖霊の蛇【参】→ 祖霊の牙【肆】＋祖霊の蛇【肆】→ 祖霊の大蛇牙（Ouroboros）。
+  - そのあと：飛蛇の尾（Uncoiled Fury）＋飛蛇連尾撃（Uncoiled Twinfang）＋飛蛇乱尾撃（Uncoiled Twinblood）を2回 → 参の牙【背撃】（Hindsting Strike）か参の牙【背裂】（Hindsbane Fang）＋蛇尾撃（Death Rattle）→ 壱の蛇【強砕】→ 弐の蛇【猛襲】＋双牙2種 → 弐の蛇【疾速】＋双牙2種。
+  - パーティのバフは壱の蛇【強砕】の後あたりから入る見込みで組まれている。
 
 ### ヴァイパーのバースト（2分）
 - 蛇の霊気（Serpent's Ire）は使えるようになったらすぐ使う。祖霊降ろし実行可（Ready to Reawaken）が付き、霊力ゲージなしで祖霊降ろしに入れる。飛蛇の魂も1つ増える。
