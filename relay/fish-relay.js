@@ -428,7 +428,7 @@ async function lodestoneSearch(request, cors) {
   while ((m = re.exec(html)) && results.length < 12) {
     if (seen.has(m[1])) continue;
     seen.add(m[1]);
-    results.push({ path: m[1], category: m[2], name: m[4].replace(/&#8288;/g, "").replace(/&amp;/g, "&").trim() });
+    results.push({ path: m[1], category: m[2], name: m[4].replace(/&#8288;/g, "").replace(/&amp;/g, "&").replace(/[\ue000-\uf8ff]/g, "").trim() });
   }
   return json({ results }, 200, cors);
 }
