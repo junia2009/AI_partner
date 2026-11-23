@@ -509,6 +509,10 @@
         <label class="check"><input id="nudges" type="checkbox"> パラスから話しかける（ごみの日の前の夜・部屋の環境・久しぶり・夜更かしのときに一言）</label>
       </div>
       <div class="field">
+        <label class="check"><input id="wakeWord" type="checkbox"> 「パラス」と呼びかけると聞き取りを始める（タップ不要）</label>
+        <p class="hint">端末の中だけで「パラス」を聞き分けます（声は外に送りません）。はじめてオンにしたときに約50MBの音声認識データを読み込みます。アプリを画面に出している間だけ動きます。Bluetooth イヤホンでは通話用の音質になります。</p>
+      </div>
+      <div class="field">
         <label for="autoReset">しばらく話さなかったら新しい会話にする</label>
         <select id="autoReset">
           <option value="30">30分</option>
@@ -4118,7 +4122,7 @@ async function startFishListening({ auto = false } = {}) {
 }
 
 async function transcribeFish(blob) {
-  const ext = blob.type.includes("mp4") ? "m4a" : blob.type.includes("ogg") ? "ogg" : "webm";
+  const ext = blob.type.includes("mp4") ? "m4a" : blob.type.includes("ogg") ? "ogg" : blob.type.includes("wav") ? "wav" : "webm";
   const fd = new FormData();
   fd.append("audio", blob, `voice.${ext}`);
   fd.append("language", "ja");
@@ -4392,6 +4396,173 @@ function stopAll() {
   setState("idle", "マイクを押して話しかけてください");
 }
 
+// ===== 呼びかけで起動（「パラス」）=====
+// 端末の中の音声認識（Vosk・日本語の小さいモデル）で「パラス」だけを待つ。声は外へ送らない。
+// 待っているのは、何もしていない（idle）とき・画面に出ているときだけ。聞き取り・返事の間は止める
+const VOSK_JS = "https://cdn.jsdelivr.net/npm/vosk-browser@0.0.8/dist/vosk.js";
+const VOSK_MODEL = "assets/vosk/model-ja.tar.gz";
+const wake = { model: null, loading: null, stream: null, ctx: null, node: null, rec: null, running: false, unlocked: false, lastHit: 0, buf: [], bufStart: 0, total: 0, rate: 16000 };
+const WAKE_CONF = 0.95;       // 「プラス」などの聞き違いを避けるため、かなり確かなときだけ反応する
+const WAKE_KEEP_SEC = 15;     // 「パラス、明日の予定は？」の続きを拾うため、直近の音を少しだけ手元に残す（外へは送らない）
+function wakeWanted() {
+  return !!settings.wakeWord && document.visibilityState === "visible" && document.body.dataset.state === "idle" && !busy && !recogActive;
+}
+async function wakeLoadModel() {
+  if (wake.model) return wake.model;
+  if (wake.loading) return wake.loading;
+  wake.loading = (async () => {
+    if (!window.Vosk) {
+      await new Promise((resolve, reject) => {
+        const sc = document.createElement("script");
+        sc.src = VOSK_JS; sc.onload = resolve; sc.onerror = () => reject(new Error("音声認識の部品を読み込めなかった"));
+        document.head.appendChild(sc);
+      });
+    }
+    // モデル（約50MB）は一度読んだら端末に保存して、次からはすぐ使う
+    let blob = null;
+    try {
+      const cache = await caches.open("pallas-vosk-v1");
+      let res = await cache.match(VOSK_MODEL);
+      if (!res) {
+        setWakeStatus("呼びかけ用の音声データを読み込んでいます（初回のみ・約50MB）…");
+        res = await fetch(VOSK_MODEL);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        await cache.put(VOSK_MODEL, res.clone());
+      }
+      blob = await res.blob();
+    } catch {
+      const res = await fetch(VOSK_MODEL);
+      blob = await res.blob();
+    }
+    const url = URL.createObjectURL(blob);
+    const model = await window.Vosk.createModel(url);
+    model.setLogLevel(-2);
+    wake.model = model;
+    return model;
+  })();
+  try { return await wake.loading; } catch (e) { wake.loading = null; throw e; }
+}
+function setWakeStatus(t) { if (document.body.dataset.state === "idle") $("status").textContent = t; }
+async function wakeStart() {
+  if (wake.running || !wakeWanted() || !wake.unlocked) return;
+  wake.running = true;
+  try {
+    const model = await wakeLoadModel();
+    if (!wakeWanted()) { wake.running = false; return; }
+    setAudioMode("play-and-record");
+    wake.stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
+    if (!wakeWanted()) { wakeStop(); return; }
+    if (!wake.ctx) wake.ctx = new (window.AudioContext || window.webkitAudioContext)();
+    if (wake.ctx.state === "suspended") await wake.ctx.resume().catch(() => {});
+    const rec = new model.KaldiRecognizer(wake.ctx.sampleRate, JSON.stringify(["パラス", "[unk]"]));
+    rec.setWords(true);
+    wake.buf = []; wake.bufStart = 0; wake.total = 0; wake.rate = wake.ctx.sampleRate;
+    rec.on("result", (msg) => {
+      const r = msg.result || {};
+      const words = r.result || [];
+      const i = words.findIndex((w) => w.word === "パラス" && (w.conf ?? 1) >= WAKE_CONF);
+      if (i < 0) return;
+      const rest = words.slice(i + 1);
+      wakeHit(`確からしさ ${(words[i].conf ?? 1).toFixed(2)}${rest.length ? "・続けて話した" : ""}`, rest.length ? { from: words[i].end, to: rest[rest.length - 1].end } : null);
+    });
+    wake.rec = rec;
+    const src = wake.ctx.createMediaStreamSource(wake.stream);
+    const node = wake.ctx.createScriptProcessor(4096, 1, 1);
+    node.onaudioprocess = (e) => {
+      const ch = e.inputBuffer.getChannelData(0);
+      wake.buf.push(new Float32Array(ch));
+      wake.total += ch.length;
+      while (wake.buf.length && wake.total - wake.bufStart - wake.buf[0].length > WAKE_KEEP_SEC * wake.rate) { wake.bufStart += wake.buf[0].length; wake.buf.shift(); }
+      try { rec.acceptWaveform(e.inputBuffer); } catch {}
+    };
+    src.connect(node);
+    node.connect(wake.ctx.destination);
+    wake.node = node;
+    setWakeStatus("「パラス」と呼ぶか、マイクを押してください");
+    diag("👂 呼びかけ待ちを開始");
+  } catch (e) {
+    diag(`👂 呼びかけ待ちを開始できなかった：${e.message}`);
+    wakeStop();
+    if (/Permission|NotAllowed/i.test(e.name + e.message)) setWakeStatus("マイクが許可されていないので、呼びかけは使えません");
+  }
+}
+function wakeStop() {
+  try { wake.node?.disconnect(); } catch {}
+  try { wake.rec?.remove(); } catch {}
+  try { wake.stream?.getTracks().forEach((t) => t.stop()); } catch {}
+  // 音の仕組み（AudioContext）は最初のタップで作ったものを使い回す（iOS はタップの外で新しく作ると鳴らない）
+  wake.node = wake.rec = wake.stream = null;
+  if (wake.running) diag("👂 呼びかけ待ちを止めた");
+  wake.running = false;
+}
+function wakeBeep() {
+  try {
+    const ctx = wake.ctx;
+    if (!ctx) return;
+    const o = ctx.createOscillator(), g = ctx.createGain();
+    o.frequency.value = 880; o.type = "sine";
+    g.gain.setValueAtTime(0.0001, ctx.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.25, ctx.currentTime + 0.02);
+    g.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.18);
+    o.connect(g); g.connect(ctx.destination); o.start(); o.stop(ctx.currentTime + 0.2);
+  } catch {}
+}
+// 手元に残した音の一部（秒）を WAV にする
+function wakeClipWav(fromSec, toSec) {
+  const rate = wake.rate, a = Math.max(0, Math.floor(fromSec * rate) - wake.bufStart), b = Math.floor(toSec * rate) - wake.bufStart;
+  const all = new Float32Array(Math.max(0, wake.total - wake.bufStart));
+  let o = 0; for (const c of wake.buf) { all.set(c, o); o += c.length; }
+  const pcm = all.subarray(Math.max(0, a), Math.min(all.length, b));
+  if (pcm.length < rate * 0.3) return null;
+  const view = new DataView(new ArrayBuffer(44 + pcm.length * 2));
+  const w = (off, s) => { for (let i = 0; i < s.length; i++) view.setUint8(off + i, s.charCodeAt(i)); };
+  w(0, "RIFF"); view.setUint32(4, 36 + pcm.length * 2, true); w(8, "WAVE"); w(12, "fmt ");
+  view.setUint32(16, 16, true); view.setUint16(20, 1, true); view.setUint16(22, 1, true); view.setUint32(24, rate, true);
+  view.setUint32(28, rate * 2, true); view.setUint16(32, 2, true); view.setUint16(34, 16, true); w(36, "data"); view.setUint32(40, pcm.length * 2, true);
+  for (let i = 0; i < pcm.length; i++) view.setInt16(44 + i * 2, Math.max(-1, Math.min(1, pcm[i])) * 0x7fff, true);
+  return new Blob([view], { type: "audio/wav" });
+}
+async function wakeHit(info, follow) {
+  if (Date.now() - wake.lastHit < 1500) return;
+  wake.lastHit = Date.now();
+  diag(`👂 呼びかけを検出（${info}）`);
+  // 「パラス、〇〇」と続けて話していたら、続きの部分をそのまま文字にして送る（Fish Audio の文字起こしがあるとき）
+  const clip = follow && asrEngine() === "fish" ? wakeClipWav(follow.from, follow.to + 0.4) : null;
+  wakeStop();
+  wakeBeep();
+  if (clip) {
+    setState("thinking", "文字にしています…");
+    const pending = addMsg("user interim", "（文字にしています…）");
+    try {
+      const text = await transcribeFish(clip);
+      pending.remove();
+      diag(`👂 続きを文字起こし：「${text}」`);
+      if (text.replace(/[、。,.!?！？\s]/g, "").length >= 2) { send(fixCallName(text)); return; }
+    } catch (e) { pending.remove(); diag(`👂 続きの文字起こしに失敗：${e.message}`); }
+    setState("idle");
+  }
+  setTimeout(() => { if (document.body.dataset.state === "idle" && !busy && !recogActive) startListening(); }, 250);
+}
+// 状態に合わせて、待つ・止める
+let wakeTimer = null;
+function wakeRefresh() {
+  clearTimeout(wakeTimer);
+  if (!settings.wakeWord) { wakeStop(); return; }
+  if (!wakeWanted()) { if (wake.running) wakeStop(); return; }
+  wakeTimer = setTimeout(() => { if (wakeWanted()) wakeStart(); }, 700);
+}
+new MutationObserver(wakeRefresh).observe(document.body, { attributes: true, attributeFilter: ["data-state"] });
+document.addEventListener("visibilitychange", wakeRefresh);
+// ブラウザは、画面に一度触れるまでマイクと音を使えない。最初のタップで呼びかけ待ちを始める
+const wakeUnlock = () => {
+  if (wake.unlocked) return;
+  wake.unlocked = true;
+  try { wake.ctx = new (window.AudioContext || window.webkitAudioContext)(); wake.ctx.resume().catch(() => {}); } catch {}
+  wakeRefresh();
+};
+document.addEventListener("pointerdown", wakeUnlock, { passive: true });
+document.addEventListener("keydown", wakeUnlock);
+
 // ===== UI =====
 $("micBtn").addEventListener("click", () => {
   // iOS Safari は最初のユーザー操作の中で読み上げを有効化しておく必要がある
@@ -4511,6 +4682,7 @@ function syncSettingsForm() {
   preloadGis();
   $("morningGreeting").checked = settings.morningGreeting !== false;
   $("nudges").checked = settings.nudges !== false;
+  $("wakeWord").checked = !!settings.wakeWord;
   $("ttsEngine").value = settings.ttsEngine;
   $("asrEngine").value = settings.asrEngine || "auto";
   $("fishVoice").value = FISH_VOICES.some(v => v.id === settings.fishVoice) || settings.fishVoice === "custom" ? settings.fishVoice : FISH_VOICES[0].id;
@@ -4766,6 +4938,8 @@ $("settingsForm").addEventListener("submit", (e) => {
   if (settings.homeDataUrl !== $("homeDataUrl").value.trim()) { settings.homeDataUrl = $("homeDataUrl").value.trim(); homeCache = { at: 0, data: null }; loadHome(); }
   settings.morningGreeting = $("morningGreeting").checked;
   settings.nudges = $("nudges").checked;
+  settings.wakeWord = $("wakeWord").checked;
+  setTimeout(wakeRefresh, 300);
   settings.bgmVolume = Number($("bgmVolume").value);
   if (settings.bgmStyle !== $("bgmStyle").value) {
     settings.bgmStyle = $("bgmStyle").value;

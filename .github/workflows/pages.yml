@@ -30,6 +30,7 @@ jobs:
           mkdir -p _site
           cp index.html manifest.webmanifest sw.js _site/
           cp -r icons _site/
+          mkdir -p _site/assets && cp -r assets/vosk _site/assets/
           touch _site/.nojekyll
 
       # knowledge/ の資料から、パラスが調べるための索引を作る（PDF があるときだけ pdftotext を入れる）

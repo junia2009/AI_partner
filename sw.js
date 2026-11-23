@@ -24,7 +24,8 @@ self.addEventListener("install", (event) => {
 self.addEventListener("activate", (event) => {
   event.waitUntil(
     caches.keys()
-      .then((keys) => Promise.all(keys.filter((k) => k !== VERSION).map((k) => caches.delete(k))))
+      // 呼びかけ用の音声認識データ（pallas-vosk-…）は大きいので、アプリの更新では消さない
+      .then((keys) => Promise.all(keys.filter((k) => k !== VERSION && !k.startsWith("pallas-vosk")).map((k) => caches.delete(k))))
       .then(() => self.clients.claim())
   );
 });
@@ -33,6 +34,8 @@ self.addEventListener("fetch", (event) => {
   const req = event.request;
   if (req.method !== "GET") return;
   const url = new URL(req.url);
+  // 呼びかけ用の音声認識データはページ側で保存するので、ここでは扱わない（二重に保存しない）
+  if (url.pathname.includes("/assets/vosk/")) return;
 
   // バージョン固定の CDN ライブラリ：保存版を優先
   if (url.hostname === "cdn.jsdelivr.net") {
