@@ -340,12 +340,18 @@
   }
   .info-panel[hidden] { display: none; }
   @keyframes infoIn { from { opacity: 0; transform: translate(-50%, 16px); } }
-  .info-head { display: flex; align-items: center; justify-content: space-between; padding: 10px 14px; border-bottom: 1px solid var(--line); }
+  .info-head { display: flex; align-items: center; justify-content: space-between; padding: 10px 14px; border-bottom: 1px solid var(--line); cursor: grab; touch-action: none; user-select: none; -webkit-user-select: none; }
+  .info-panel.dragging .info-head { cursor: grabbing; }
+  .info-panel.moved { animation: none; }
+  /* 右下のつまみで大きさを変える */
+  .info-grip { position: absolute; right: 2px; bottom: 2px; width: 22px; height: 22px; cursor: nwse-resize; touch-action: none; opacity: .55;
+    background: linear-gradient(135deg, transparent 50%, rgba(124,196,255,.55) 50% 58%, transparent 58% 70%, rgba(124,196,255,.55) 70% 78%, transparent 78%); }
+  .info-grip:hover { opacity: 1; }
   .info-head b { font-size: 14px; letter-spacing: .06em; color: var(--accent); font-weight: 600; }
   .info-head button { background: transparent; border: none; color: var(--muted); font-size: 15px; padding: 2px 6px; }
   .info-map { height: 190px; flex: none; background: #0b0f17; }
   .info-map[hidden] { display: none; }
-  .info-body { overflow-y: auto; padding: 4px 0; }
+  .info-body { overflow-y: auto; padding: 4px 0 14px; flex: 1; min-height: 0; }
   .info-item { display: flex; gap: 10px; padding: 10px 14px; border-bottom: 1px solid var(--line); }
   .info-item:last-child { border-bottom: none; }
   .info-num { flex: none; width: 22px; height: 22px; border-radius: 50%; background: var(--accent); color: #0b0f17; font-size: 12px; font-weight: 700; display: grid; place-items: center; margin-top: 1px; }
@@ -455,6 +461,7 @@
   </div>
   <div class="info-map" id="infoMap" hidden></div>
   <div class="info-body" id="infoBody"></div>
+  <div class="info-grip" id="infoGrip" title="ドラッグで大きさを変える"></div>
 </section>
 
 <footer>
@@ -4397,6 +4404,65 @@ $("stopBtn").addEventListener("click", () => { listenAfterTurn = false; stopAll(
 $("drone").addEventListener("click", () => { if (morningDue()) startMorningGreeting(); else $("micBtn").click(); });
 $("morningChip").addEventListener("click", startMorningGreeting);
 $("infoClose").addEventListener("click", closeInfoPanel);
+// ===== 情報カードを動かす・大きさを変える =====
+// タイトルの帯をつかんで移動、右下のつまみで大きさを変える。位置と大きさは覚えておく（ダブルクリックで元に戻す）
+(() => {
+  const panel = $("infoPanel"), head = panel.querySelector(".info-head"), grip = $("infoGrip");
+  const KEY = "pallas.infoPanelBox";
+  const clampBox = (b) => {
+    const vw = window.innerWidth, vh = window.innerHeight;
+    const w = Math.min(Math.max(260, b.w), vw - 8), h = Math.min(Math.max(160, b.h), vh - 8);
+    return { x: Math.min(Math.max(4, b.x), vw - w - 4), y: Math.min(Math.max(4, b.y), vh - h - 4), w, h };
+  };
+  const apply = (b) => {
+    b = clampBox(b);
+    Object.assign(panel.style, { left: b.x + "px", top: b.y + "px", bottom: "auto", transform: "none", width: b.w + "px", height: b.h + "px", maxHeight: "none" });
+    panel.classList.add("moved");
+    if (typeof infoMap !== "undefined" && infoMap?.invalidateSize) infoMap.invalidateSize();
+    return b;
+  };
+  const save = (b) => { try { localStorage.setItem(KEY, JSON.stringify(b)); } catch {} };
+  const reset = () => {
+    ["left", "top", "bottom", "transform", "width", "height", "maxHeight"].forEach((k) => (panel.style[k] = ""));
+    panel.classList.remove("moved");
+    try { localStorage.removeItem(KEY); } catch {}
+    if (typeof infoMap !== "undefined" && infoMap?.invalidateSize) infoMap.invalidateSize();
+  };
+  // 前回の位置で開く
+  new MutationObserver(() => {
+    if (panel.hidden) return;
+    let b = null;
+    try { b = JSON.parse(localStorage.getItem(KEY) || "null"); } catch {}
+    if (b) apply(b);
+  }).observe(panel, { attributes: true, attributeFilter: ["hidden"] });
+  const drag = (el, mode) => el.addEventListener("pointerdown", (e) => {
+    if (mode === "move" && e.target.closest("button")) return;
+    e.preventDefault();
+    const r = panel.getBoundingClientRect();
+    const start = { px: e.clientX, py: e.clientY, x: r.left, y: r.top, w: r.width, h: r.height };
+    let last = start;
+    el.setPointerCapture(e.pointerId);
+    panel.classList.add("dragging");
+    const onMove = (ev) => {
+      const dx = ev.clientX - start.px, dy = ev.clientY - start.py;
+      last = apply(mode === "move" ? { x: start.x + dx, y: start.y + dy, w: start.w, h: start.h } : { x: start.x, y: start.y, w: start.w + dx, h: start.h + dy });
+    };
+    const onUp = () => {
+      el.removeEventListener("pointermove", onMove);
+      el.removeEventListener("pointerup", onUp);
+      el.removeEventListener("pointercancel", onUp);
+      panel.classList.remove("dragging");
+      if (last !== start) save(last);
+    };
+    el.addEventListener("pointermove", onMove);
+    el.addEventListener("pointerup", onUp);
+    el.addEventListener("pointercancel", onUp);
+  });
+  drag(head, "move");
+  drag(grip, "resize");
+  head.addEventListener("dblclick", reset);
+  window.addEventListener("resize", () => { if (!panel.hidden && panel.classList.contains("moved")) apply(panel.getBoundingClientRect() && { x: panel.offsetLeft, y: panel.offsetTop, w: panel.offsetWidth, h: panel.offsetHeight }); });
+})();
 window.addEventListener("keydown", (e) => { if (e.key === "Escape" && !$("infoPanel").hidden) closeInfoPanel(); });
 $("googleChip").addEventListener("click", () => { store.remove("pallas.gNeedReconnect"); connectGoogle(); renderGoogleStatus(); });
 $("googleConnectBtn").addEventListener("click", connectGoogle);
