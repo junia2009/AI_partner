@@ -359,6 +359,7 @@
   .lds-kv .k { color: var(--muted); }
   .lds-row { font-size: 13px; line-height: 1.6; padding: 2px 0; word-break: break-word; }
   .lds-row .loc { color: var(--muted); font-size: 12px; }
+  .lds-indent { padding-left: 14px; }
   .lds-note { font-size: 11.5px; color: var(--muted); line-height: 1.6; }
   .info-meta { display: flex; flex-wrap: wrap; gap: 6px 10px; font-size: 12px; margin-top: 4px; align-items: center; }
   .info-meta .star { color: #ffd58a; }
@@ -2062,9 +2063,65 @@ function chunkLabel(k, c) {
   const d = k.docs[c.doc];
   return `${d.title}${c.heading && c.heading !== d.title ? ` ／ ${c.heading.replace(d.title + " > ", "")}` : ""}`;
 }
+// 見出しが続きになっている隣の節も一緒に取る（例「アム・アレーンの風脈」と「アム・アレーンの風脈クエスト」）
+function withSiblings(k, top, max = 6) {
+  const out = [...top.map((t) => t.i)];
+  for (const t of top) {
+    const c = k.chunks[t.i], last = c.heading.split(" > ").pop();
+    if (last.length < 4) continue;
+    for (let j = Math.max(0, t.i - 4); j <= Math.min(k.chunks.length - 1, t.i + 4); j++) {
+      const o = k.chunks[j];
+      if (o.doc !== c.doc || out.includes(j)) continue;
+      const ol = o.heading.split(" > ").pop();
+      if (ol.startsWith(last) || last.startsWith(ol) && ol.length >= 4) out.push(j);
+    }
+  }
+  return out.slice(0, max);
+}
+// 資料の節を、見出し・箇条書き・項目と値のカードで見せる
+function showKnowledgePanel(k, idxs) {
+  if (!idxs.length) return;
+  const first = k.chunks[idxs[0]];
+  const title = first.heading.split(" > ").pop() || k.docs[first.doc].title;
+  openInfoPanel(`📚 ${title}`, (body) => {
+    const item = el("div", "info-item");
+    const main = el("div", "info-main");
+    main.appendChild(el("div", "lds-sub", k.docs[first.doc].title));
+    for (const i of idxs) {
+      const c = k.chunks[i];
+      main.appendChild(el("div", "lds-h", c.heading.split(" > ").pop()));
+      let kv = null;
+      for (const raw of c.text.split("\n")) {
+        if (!raw.trim()) continue;
+        const sub = /^\s{2,}[-*] /.test(raw);
+        let l = raw.trim().replace(/^[-*] /, "");
+        if (/^#{1,6} /.test(l)) { kv = null; main.appendChild(el("div", "lds-h", l.replace(/^#+ /, ""))); continue; }
+        if (/^\|/.test(l)) { if (/^\|[\s:-|]+\|$/.test(l)) continue; l = l.replace(/^\||\|$/g, "").split("|").map((s) => s.trim()).join(" ／ "); }
+        const m = !sub && l.length < 80 && l.match(/^([^：「」（]{1,14})：(.+)$/);
+        if (m) {
+          if (!kv) { kv = el("div", "lds-kv"); main.appendChild(kv); }
+          kv.appendChild(el("div", "k", m[1])); kv.appendChild(el("div", "v", m[2]));
+          continue;
+        }
+        kv = null;
+        const row = el("div", sub ? "lds-row lds-indent" : "lds-row");
+        // 「（X:… Y:…）」の座標は小さく
+        const pm = l.match(/^(.*?)（(X:[\d.]+ Y:[\d.]+(?: Z:[\d.]+)?)）(.*)$/);
+        const qm = !pm && l.match(/^(「[^」]+」)(.*)$/);
+        if (qm) { row.appendChild(el("strong", "", qm[1])); row.appendChild(el("span", "loc", qm[2].replace(/^：/, "　"))); }
+        else if (pm) { row.appendChild(document.createTextNode(pm[1])); row.appendChild(el("span", "loc", "　" + pm[2])); if (pm[3]) row.appendChild(document.createTextNode(pm[3])); }
+        else row.textContent = l;
+        main.appendChild(row);
+      }
+    }
+    item.appendChild(main);
+    body.appendChild(item);
+  });
+}
 // 話しかけられた内容が資料に強く関係していれば、関係する部分を自動で添える
 // （パラスが調べ忘れても資料に基づいて答えられるように。パラス自身の使い方の資料は道具で足りるので除く）
 const AUTO_K_MIN = 8;
+const AUTO_K_CARD = 20;
 async function autoKnowledge(text) {
   try {
     const k = await loadKnowledge();
@@ -2075,13 +2132,16 @@ async function autoKnowledge(text) {
     const hits = all.filter((x) => !/^パラスの使い方/.test(k.docs[k.chunks[x.i].doc].path));
     if (!hits.length || hits[0].sc < AUTO_K_MIN) return null;
     const top = hits.filter((x) => x.sc >= hits[0].sc * 0.6).slice(0, 3);
+    const idxs = withSiblings(k, top, 5);
     const refs = [];
-    for (const t of top) {
-      const d = k.docs[k.chunks[t.i].doc];
+    for (const i of idxs) {
+      const d = k.docs[k.chunks[i].doc];
       if (!refs.some((r) => r.path === d.path)) refs.push({ path: d.path, title: d.title });
     }
     const block = "[資料からの抜粋（マスターの発言に関係しそうな部分を自動で検索したもの）]\n" +
-      top.map((t) => { const c = k.chunks[t.i]; return `【${chunkLabel(k, c)}】\n${c.text.slice(0, 700)}`; }).join("\n\n");
+      idxs.map((i) => { const c = k.chunks[i]; return `【${chunkLabel(k, c)}】\n${c.text.slice(0, 900)}`; }).join("\n\n");
+    // 関係がはっきり強いときは、画面にもカードで出す
+    if (hits[0].sc >= AUTO_K_CARD) showKnowledgePanel(k, idxs.filter((i) => k.chunks[i].doc === k.chunks[idxs[0]].doc));
     return { block, refs };
   } catch { return null; }
 }
@@ -2094,15 +2154,17 @@ async function searchKnowledge(input) {
   const max = Math.min(8, Math.max(1, Math.round(Number(input?.max) || 5)));
   const top = scored.slice(0, max);
   if (!top.length) return { result: "資料の中に見つかりませんでした" };
-  for (const t of top) {
-    const c = k.chunks[t.i], d = k.docs[c.doc];
+  const idxs = withSiblings(k, top, max + 2);
+  for (const i of idxs) {
+    const d = k.docs[k.chunks[i].doc];
     if (!turnKnowledge.some((x) => x.path === d.path)) turnKnowledge.push({ path: d.path, title: d.title });
   }
+  showKnowledgePanel(k, idxs.filter((i) => k.chunks[i].doc === k.chunks[idxs[0]].doc).slice(0, 4));
   return {
-    result: top.map((t) => {
-      const c = k.chunks[t.i];
+    result: idxs.map((i) => {
+      const c = k.chunks[i];
       return `【${chunkLabel(k, c)}】\n${c.text.slice(0, 900)}`;
-    }).join("\n\n"),
+    }).join("\n\n") + "\n画面にカードを出した",
   };
 }
 async function knowledgeList() {
