@@ -366,6 +366,9 @@
   .lds-row { font-size: 13px; line-height: 1.6; padding: 2px 0; word-break: break-word; }
   .lds-row .loc { color: var(--muted); font-size: 12px; }
   .lds-indent { padding-left: 14px; }
+  .macro-code { margin: 6px 0 8px; padding: 10px 12px; background: rgba(0,0,0,.35); border: 1px solid var(--line); border-radius: 10px; font: 13px/1.7 ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace; white-space: pre-wrap; word-break: break-all; user-select: text; -webkit-user-select: text; }
+  .macro-warn { color: #ffb4a8; font-size: 12.5px; }
+  .macro-copy { background: var(--accent); color: #06121f; border: none; border-radius: 999px; padding: 6px 16px; font-weight: 600; font-size: 13px; }
   .lds-note { font-size: 11.5px; color: var(--muted); line-height: 1.6; }
   .info-meta { display: flex; flex-wrap: wrap; gap: 6px 10px; font-size: 12px; margin-top: 4px; align-items: center; }
   .info-meta .star { color: #ffd58a; }
@@ -829,6 +832,8 @@ const PALLAS_SYSTEM_PROMPT = `あなたは「パラス」。マスター専属�
 - ストーリーの結末や黒幕などのネタバレは、聞かれたときだけ答えます。
 - ジョブの特徴や回し方、ギミックの処理、コンテンツの進め方、レベル上げ、ギャザクラ、金策、世界観は、資料（FF14 の攻略資料）を調べて答えます。資料の名前や数値は、必要ならエオルゼアデータベースで確かめます。資料にない細かい最新情報は「パッチで変わるかも」と一言添えます。
 - マスターが攻略で困っていたら、戦術AIとして作戦を立てる気持ちで、次にやる一手を具体的に伝えます。
+- マクロを頼まれたら、資料（マクロの作り方と例）で書き方を確かめてから行を組み立て、ffxiv_macro で画面にコピーボタンつきのカードを出します。声では「何をするマクロか」と「どこに置いて、いつ押すか」だけ伝えます。確認で問題が出たら、直してもう一度出します。
+- クラフターのマクロは、レシピの条件（レベル、工数、品質、耐久、作業精度・加工精度・CP）が分からなければ、一度だけ聞きます。条件が分からないまま決め打ちしません。
 
 # ごみ出し（東久留米市）
 - 発言の先頭に [ごみ（〇地区）: 今日 …／明日 …] があれば、それがマスターの家の今日と明日のごみの収集です。「明日何ごみ？」にはこれで答えます。収集は朝8時30分まで。
@@ -994,6 +999,20 @@ const TOOLS = [
         query: { type: "string", description: "日本語の名前（一部でもよい）。例：エクスカリバー、ハイポーション、ファイア、絶竜詩戦争。command は「/teleport」か説明の言葉（例：テレポ、ログアウト、マクロ）" },
       },
       required: ["kind", "query"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "ffxiv_macro",
+    description: "FF14 のマクロを組み立てて、画面にコピーボタンつきのカードで出す。マスターにマクロを頼まれたら、資料（マクロの作り方）を参考に行を組み立てて、これに渡す。出す前に、15行以内か・コマンドが実在するか・/ac の技名が正しいか・引用符・待ち時間を自動で確かめ、結果を返す。問題があれば直してもう一度呼ぶ。日本語クライアント向けに、技名は日本語、引用符は半角の \"、待ちは <wait.N>（整数秒）で書く。",
+    input_schema: {
+      type: "object",
+      properties: {
+        title: { type: "string", description: "マクロの名前（例：マウスオーバーケアル、作業用マクロ1）" },
+        lines: { type: "array", items: { type: "string" }, description: "マクロの各行（最大15行）。例：[\"/micon \\\"ケアル\\\"\", \"/ac \\\"ケアル\\\" <mo>\"]" },
+        note: { type: "string", description: "使い方の短い説明（どこに置くか、注意点など）" },
+      },
+      required: ["title", "lines"],
       additionalProperties: false,
     },
   },
@@ -1663,6 +1682,100 @@ function showXivPanel(q, rows) {
       item.appendChild(main);
       body.appendChild(item);
     }
+  });
+}
+
+// ===== FF14 のマクロ：組み立てて確かめ、コピーできるカードで出す =====
+let xivCommands = null;
+async function xivCommandSet() {
+  if (xivCommands) return xivCommands;
+  const set = new Set();
+  let after = 0;
+  for (let i = 0; i < 4; i++) {
+    const r = await xivGet("sheet/TextCommand", { limit: 500, after, fields: "Command,ShortCommand,Alias,ShortAlias" });
+    for (const row of r.rows || []) for (const k of ["Command", "ShortCommand", "Alias", "ShortAlias"]) { const v = row.fields?.[k]; if (v) set.add(v.toLowerCase()); }
+    if (!r.rows || r.rows.length < 500) break;
+    after = r.rows[r.rows.length - 1].row_id;
+  }
+  xivCommands = set;
+  return set;
+}
+// 技名が実在するか（戦闘の技・クラフターの技・ペットの技・PvP の技・一般アクション）
+const xivActionCache = new Map();
+async function xivActionExists(name) {
+  if (xivActionCache.has(name)) return xivActionCache.get(name);
+  const esc = name.replace(/"/g, "");
+  let ok = false;
+  for (const sheet of ["Action", "CraftAction", "GeneralAction", "PetAction", "BuddyAction", "MainCommand"]) {
+    try {
+      const r = await xivGet("search", { sheets: sheet, query: `Name@ja="${esc}"`, fields: "Name", limit: 1 });
+      if (r.results?.length) { ok = true; break; }
+    } catch {}
+  }
+  xivActionCache.set(name, ok);
+  return ok;
+}
+async function macroTool(input) {
+  const title = String(input?.title || "マクロ").trim().slice(0, 40);
+  // 全角の引用符・記号を半角に直す（ゲームは半角の " で技名を囲む）
+  let lines = (Array.isArray(input?.lines) ? input.lines : String(input?.lines || "").split("\n"))
+    .map((l) => String(l).replace(/[“”＂]/g, '"').replace(/＜/g, "<").replace(/＞/g, ">").replace(/^／/, "/").replace(/\s+$/, ""))
+    .filter((l) => l.trim());
+  const issues = [];
+  if (!lines.length) return { error: "lines が空" };
+  if (lines.length > 15) issues.push(`15行を超えている（${lines.length}行）。2つのマクロに分ける`);
+  let cmds = null;
+  try { cmds = await xivCommandSet(); } catch {}
+  let wait = 0;
+  for (const [i, l] of lines.entries()) {
+    const n = i + 1;
+    if (l.length > 100) issues.push(`${n}行目が長い（${l.length}文字）。ゲームの1行の上限を超えるかもしれない`);
+    for (const m of l.matchAll(/<wait\.([0-9.]+)>/g)) {
+      if (!/^[0-9]+$/.test(m[1])) issues.push(`${n}行目：<wait.${m[1]}> は整数秒にする`);
+      wait += Number(m[1]) || 0;
+    }
+    if ((l.match(/"/g) || []).length % 2) issues.push(`${n}行目：引用符 " が閉じていない`);
+    if (!l.startsWith("/")) continue;
+    const cmd = l.split(/\s+/)[0].toLowerCase();
+    if (cmds && cmds.size && !cmds.has(cmd)) issues.push(`${n}行目：${cmd} というコマンドは見つからない`);
+    // /ac "技名" などの技名を確かめる
+    if (/^\/(ac|action|pvpaction|craftaction|ja|jobaction|gaction|generalaction|pac|petaction)$/.test(cmd)) {
+      const am = l.match(/"([^"]+)"/) || l.match(/^\/\S+\s+(\S+)/);
+      const an = am?.[1];
+      if (an && !/^</.test(an) && !(await xivActionExists(an))) issues.push(`${n}行目：「${an}」という技は見つからない（日本語の正式名か確かめる）`);
+    }
+  }
+  showMacroPanel(title, lines, input?.note || "", issues, wait);
+  return {
+    result: `マクロ「${title}」（${lines.length}行${wait ? `・待ち合計${wait}秒` : ""}）を画面にコピーボタンつきで出した。` +
+      (issues.length ? `\n確認で見つかった問題：\n- ${issues.join("\n- ")}\n直せるものは直して、もう一度 ffxiv_macro を呼ぶ。` : "\n確認では問題なし。"),
+  };
+}
+function showMacroPanel(title, lines, note, issues, wait) {
+  openInfoPanel(`📝 マクロ：${title}`, (body) => {
+    const item = el("div", "info-item");
+    const main = el("div", "info-main");
+    main.appendChild(el("div", "lds-sub", `${lines.length}行${wait ? `・待ち合計 ${wait}秒` : ""}`));
+    const pre = el("pre", "macro-code", lines.join("\n"));
+    main.appendChild(pre);
+    if (note) main.appendChild(el("div", "lds-note", note));
+    if (issues.length) { main.appendChild(el("div", "lds-h", "確認が必要なところ")); issues.forEach((t) => main.appendChild(el("div", "lds-row macro-warn", t))); }
+    const acts = el("div", "info-actions");
+    const btn = el("button", "macro-copy", "コピー");
+    btn.type = "button";
+    btn.addEventListener("click", async () => {
+      try { await navigator.clipboard.writeText(lines.join("\n")); btn.textContent = "コピーしました"; }
+      catch {
+        // クリップボードが使えないときは、選んだ状態にして長押しでコピーしてもらう
+        const r = document.createRange(); r.selectNodeContents(pre); const s = getSelection(); s.removeAllRanges(); s.addRange(r);
+        btn.textContent = "選択しました（長押しでコピー）";
+      }
+      setTimeout(() => (btn.textContent = "コピー"), 2500);
+    });
+    acts.appendChild(btn);
+    main.appendChild(acts);
+    item.appendChild(main);
+    body.appendChild(item);
   });
 }
 
@@ -3277,6 +3390,7 @@ async function runTool(name, input) {
   if (name === "garbage") return gomiTool(input);
   if (name === "ffxiv_data") return xivTool(input);
   if (name === "eorzea_db") return eorzeaDbTool(input);
+  if (name === "ffxiv_macro") return macroTool(input);
   if (name === "calendar_list_events") return calendarList(input);
   if (name === "calendar_add_event") return calendarAdd(input);
   if (name === "calendar_delete_event") return calendarDelete(input);
