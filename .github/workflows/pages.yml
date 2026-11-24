@@ -45,5 +45,15 @@ jobs:
       - uses: actions/upload-pages-artifact@v3
         with:
           path: _site
+      # アップロード直後は公開用ファイルがまだ見つからないことがあるので、少し待ってから公開し、失敗したらもう一度だけ試す
+      - name: Wait for artifact
+        run: sleep 15
       - id: deployment
+        uses: actions/deploy-pages@v4
+        continue-on-error: true
+      - name: Wait before retry
+        if: steps.deployment.outcome == 'failure'
+        run: sleep 30
+      - id: deployment_retry
+        if: steps.deployment.outcome == 'failure'
         uses: actions/deploy-pages@v4
