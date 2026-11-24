@@ -1,10 +1,12 @@
 // パラスの知識（RAG）用の索引を作る。
 // knowledge/ フォルダの資料（.md / .txt / .pdf）を読み、検索しやすい大きさの断片に分けて JSON に書き出す。
 // 使い方： node tools/build-knowledge.mjs <出力先.json>
+// 出力：<出力先.json> は目次（分野ごとのファイル名と、その分野を呼び出す手がかりの言葉）。
+//       分野ごとの中身は、同じフォルダの knowledge-shards/<番号>.json に分けて書く（必要な分野だけ読み込むため）。
 // PDF は pdftotext（poppler-utils）で文字を取り出す。入っていなければ PDF は飛ばす。
 
-import { readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
-import { join, relative, extname, basename } from "node:path";
+import { readdirSync, readFileSync, statSync, writeFileSync, mkdirSync } from "node:fs";
+import { join, relative, extname, basename, dirname } from "node:path";
 import { execFileSync } from "node:child_process";
 
 const ROOT = "knowledge";
@@ -101,5 +103,51 @@ for (const path of files.sort()) {
   parts.forEach((c, i) => chunks.push({ id: chunks.length, doc: docs.length - 1, n: i, heading: c.heading, text: c.body }));
 }
 
-writeFileSync(OUT, JSON.stringify({ built: new Date().toISOString(), docs, chunks }));
-console.log(`知識の索引：資料 ${docs.length} 件、断片 ${chunks.length} 件 → ${OUT}`);
+// ===== 分野ごとに分ける =====
+// knowledge/A/B/… の資料は「A/B」、knowledge/A/… は「A」、直下は「core」。
+// 小さい分野は起動時に読み込む（preload）。大きい分野は、質問に手がかりの言葉が出たときだけ読む
+const PRELOAD_MAX = 120 * 1024;
+const shardOf = (path) => { const s = path.split("/"); return s.length > 2 ? s.slice(0, 2).join("/") : s.length > 1 ? s[0] : "core"; };
+// 分野ごとの追加の呼び名（見出しに出てこない言い方）
+const ALIASES = {
+  "FF14/討滅戦": ["討滅", "討伐", "極", "真"],
+  "FF14/ダンジョン": ["ダンジョン", "ID"],
+  "FF14/レイド": ["レイド", "零式", "アライアンス", "24人"],
+  "FF14/零式": ["零式", "アルカディア", "M1S", "M2S", "M3S", "M4S", "M5S", "M6S", "M7S", "M8S", "M9S", "M10S", "M11S", "M12S"],
+  "FF14/絶": ["絶", "アルティメット", "UCOB", "UWU", "TEA", "DSR", "TOP", "FRU"],
+  "FF14/探索": ["ディープダンジョン", "DD", "エウレカ", "ボズヤ", "クレセント", "特殊フィールド"],
+  "FF14/ジョブ": ["回し方", "開幕", "バースト", "スキル回し", "ロール"],
+  "FF14/生活": ["金策", "クラフター", "ギャザラー", "ギャザクラ", "風脈", "フライング", "ハウジング", "マーケット", "リテイナー"],
+};
+const STOP = new Set(["フェーズ", "攻略", "ポイント", "概要", "報酬", "ボス", "道中", "注意", "基本", "共通", "ノーマル", "コツ", "前半", "後半", "全体", "一覧", "仕組み", "最後", "最初", "とは"]);
+const groups = new Map();
+docs.forEach((d, i) => { const k = shardOf(d.path); if (!groups.has(k)) groups.set(k, []); groups.get(k).push(i); });
+const shardDir = join(dirname(OUT), "knowledge-shards");
+mkdirSync(shardDir, { recursive: true });
+const manifest = { built: new Date().toISOString(), version: 2, shards: [] };
+const wordsOf = (s) => (s.normalize("NFKC").match(/[\u30a0-\u30ffー・]{2,}|[\u3400-\u9fff々]{2,}|[A-Za-z0-9]{3,}/g) || []).map((w) => w.replace(/^・+|・+$/g, "")).filter((w) => w.length >= 2 && !STOP.has(w));
+const keyCount = new Map(); // いくつの分野に出てくる言葉か（どこにでもある言葉は手がかりにしない）
+const shardKeys = new Map();
+for (const [k, idxs] of groups) {
+  const keys = new Set();
+  for (const i of idxs) {
+    wordsOf(docs[i].title).forEach((w) => keys.add(w));
+    for (const c of chunks) if (c.doc === i) c.heading.split(" > ").slice(1).forEach((h) => wordsOf(h).forEach((w) => keys.add(w)));
+  }
+  shardKeys.set(k, keys);
+  for (const w of keys) keyCount.set(w, (keyCount.get(w) || 0) + 1);
+}
+[...groups.keys()].forEach((k, n) => {
+  const idxs = groups.get(k);
+  const map = new Map(idxs.map((i, j) => [i, j]));
+  const sd = idxs.map((i) => docs[i]);
+  const sc = chunks.filter((c) => map.has(c.doc)).map((c, j) => ({ ...c, id: j, doc: map.get(c.doc) }));
+  const body = JSON.stringify({ docs: sd, chunks: sc });
+  const file = `knowledge-shards/${n}.json`;
+  writeFileSync(join(dirname(OUT), file), body);
+  const preload = Buffer.byteLength(body) <= PRELOAD_MAX;
+  const keys = preload ? [] : [...new Set([...(ALIASES[k] || []), k.split("/").pop(), ...[...shardKeys.get(k)].filter((w) => keyCount.get(w) <= 2)])];
+  manifest.shards.push({ name: k, file, preload, size: Buffer.byteLength(body), docs: sd.map((d) => ({ path: d.path, title: d.title })), keys });
+});
+writeFileSync(OUT, JSON.stringify(manifest));
+console.log(`知識の索引：資料 ${docs.length} 件、断片 ${chunks.length} 件、分野 ${manifest.shards.length}（最初に読む ${manifest.shards.filter((s) => s.preload).length}）→ ${OUT}`);

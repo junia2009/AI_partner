@@ -61,7 +61,7 @@ iPhone・iPad は Safari／Edge の「ホーム画面に追加」でアプリの
 設置の手順は [`relay/README.md`](relay/README.md) にまとめています。設置後、パラスの設定の「中継サーバーのURL」に Worker の URL を入れます。
 
 ## 知識フォルダ（RAG）
-`knowledge/` に Markdown・テキスト・PDF を置いて `main` に入れると、公開のたびに検索用の索引（`knowledge-index.json`）が自動で作られ、パラスがそれを調べて答えます。
+`knowledge/` に Markdown・テキスト・PDF を置いて `main` に入れると、公開のたびに検索用の索引が自動で作られ、パラスがそれを調べて答えます。索引は分野（`knowledge/` の下の2階層目のフォルダ）ごとに分かれ（目次 `knowledge-index.json` と中身 `knowledge-shards/`）、小さい分野は起動時に、大きい分野は話題にその分野の名前が出たときだけ読み込みます。
 - 趣味ごとにフォルダを分けると管理しやすい（例：`knowledge/コーヒー/`）
 - 見出し（`#` `##`）をしっかり付けると、検索の精度が上がる
 - **公開ページから誰でも読めるので、個人情報や社外秘は置かない**

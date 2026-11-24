@@ -2026,26 +2026,62 @@ function ktokens(str) {
   }
   return out;
 }
-async function loadKnowledge() {
-  if (kIndex) return kIndex;
-  let data = { docs: [], chunks: [] };
-  try {
-    const res = await fetch("knowledge-index.json", { cache: "no-cache" });
-    if (res.ok) data = await res.json();
-  } catch {}
-  const df = new Map();
-  const tfs = data.chunks.map((c) => {
+// 索引は分野ごとに分かれている（knowledge-index.json は目次、中身は knowledge-shards/）。
+// 小さい分野は最初に読み込み、大きい分野は話題に手がかりの言葉が出たときだけ読み込む
+let kManifest = null, kManifestLoading = null;
+const kLoaded = new Set();
+const kShardLoading = new Map();
+function kAddChunks(data) {
+  if (!kIndex) kIndex = { docs: [], chunks: [], df: new Map(), tfs: [], avg: 1 };
+  const base = kIndex.docs.length;
+  kIndex.docs.push(...data.docs);
+  for (const c of data.chunks) {
     const tf = new Map();
-    // 見出しは本文より少し重く数える
-    // いちばん下の見出し（例「エスプレッソとは」）はさらに重くして、その節が上に来やすくする
+    // 見出しは本文より少し重く数える。いちばん下の見出し（例「エスプレッソとは」）はさらに重くする
     const last = c.heading.split(" > ").pop();
     for (const tok of ktokens(`${c.heading} ${c.heading} ${last} ${last} ${last} ${c.text}`)) tf.set(tok, (tf.get(tok) || 0) + 1);
-    for (const tok of tf.keys()) df.set(tok, (df.get(tok) || 0) + 1);
+    for (const tok of tf.keys()) kIndex.df.set(tok, (kIndex.df.get(tok) || 0) + 1);
     let len = 0; tf.forEach((v) => { len += v; });
-    return { tf, len };
-  });
-  const avg = tfs.reduce((a, x) => a + x.len, 0) / Math.max(1, tfs.length);
-  kIndex = { ...data, df, tfs, avg };
+    kIndex.chunks.push({ ...c, id: kIndex.chunks.length, doc: c.doc + base });
+    kIndex.tfs.push({ tf, len });
+  }
+  kIndex.avg = kIndex.tfs.reduce((a, x) => a + x.len, 0) / Math.max(1, kIndex.tfs.length);
+}
+async function kLoadShard(sh) {
+  if (kLoaded.has(sh.file)) return;
+  if (!kShardLoading.has(sh.file)) {
+    kShardLoading.set(sh.file, fetch(sh.file, { cache: "no-cache" }).then((r) => (r.ok ? r.json() : null)).catch(() => null).then((data) => {
+      if (data && !kLoaded.has(sh.file)) { kAddChunks(data); kLoaded.add(sh.file); }
+      kShardLoading.delete(sh.file);
+    }));
+  }
+  await kShardLoading.get(sh.file);
+}
+async function loadKnowledge() {
+  if (!kManifest) {
+    kManifestLoading ||= fetch("knowledge-index.json", { cache: "no-cache" }).then((r) => (r.ok ? r.json() : null)).catch(() => null).then((m) => {
+      // 古い形式（全部入り）にも対応する
+      if (m && m.chunks) { kAddChunks(m); kManifest = { shards: [] }; }
+      else kManifest = m || { shards: [] };
+    });
+    await kManifestLoading;
+    await Promise.all(kManifest.shards.filter((s) => s.preload).map(kLoadShard));
+  }
+  if (!kIndex) kIndex = { docs: [], chunks: [], df: new Map(), tfs: [], avg: 1 };
+  return kIndex;
+}
+// 話題に合う分野をまだ読んでいなければ読み込んでから返す（「サスタシャ」→ダンジョン、「律動編」→レイド）
+async function loadKnowledgeFor(text) {
+  await loadKnowledge();
+  const q = String(text || "").normalize("NFKC");
+  const ql = q.toLowerCase();
+  const terms = q.match(/[\u30a0-\u30ffー・]{3,}|[\u3400-\u9fff々]{3,}/g) || [];
+  const need = kManifest.shards.filter((s) => !s.preload && !kLoaded.has(s.file) && s.keys.some((k) => {
+    const kl = k.toLowerCase();
+    if (/^[a-z0-9]+$/.test(kl)) return new RegExp(`(^|[^a-z0-9])${kl}([^a-z0-9]|$)`).test(ql); // 英字の略称は単語として
+    return q.includes(k) || terms.some((t) => k.includes(t));
+  }));
+  if (need.length) await Promise.all(need.map(kLoadShard));
   return kIndex;
 }
 // BM25 で断片に点数を付け、高い順に返す
@@ -2162,7 +2198,7 @@ const AUTO_K_MIN = 8;
 const AUTO_K_CARD = 20;
 async function autoKnowledge(text) {
   try {
-    const k = await loadKnowledge();
+    const k = await loadKnowledgeFor(text);
     if (!k.chunks.length) return null;
     const all = scoreKnowledge(k, text);
     // いちばん関係が深いのがパラスの使い方の資料なら、道具の話なので何も添えない
@@ -2186,7 +2222,7 @@ async function autoKnowledge(text) {
 async function searchKnowledge(input) {
   const query = typeof input?.query === "string" ? input.query.trim() : "";
   if (!query) return { error: "query が空です" };
-  const k = await loadKnowledge();
+  const k = await loadKnowledgeFor(query);
   if (!k.chunks.length) return { result: "調べられる資料がまだありません（GitHub の knowledge フォルダに資料を置くと使えるようになる）" };
   const scored = scoreKnowledge(k, query);
   const max = Math.min(8, Math.max(1, Math.round(Number(input?.max) || 5)));
@@ -2207,8 +2243,9 @@ async function searchKnowledge(input) {
 }
 async function knowledgeList() {
   const k = await loadKnowledge();
-  if (!k.docs.length) return { result: "資料はまだありません" };
-  return { result: k.docs.map((d) => `- ${d.title}（${d.path}）`).join("\n") };
+  const all = kManifest?.shards?.length ? kManifest.shards.flatMap((s) => s.docs) : k.docs;
+  if (!all.length) return { result: "資料はまだありません" };
+  return { result: all.map((d) => `- ${d.title}（${d.path}）`).join("\n") };
 }
 
 // ===== マスターの名前・呼び名 =====
