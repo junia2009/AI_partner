@@ -377,11 +377,50 @@ function ldsText(html) {
 }
 // 詳細ページ用：表の1行・項目と値・リストの1項目を、それぞれ1行にまとめた文字にする
 // 見出しは「■ 」で始める（画面側で見出しとして表示する）
+// HQ のあるアイテムは、通常品と HQ の値が見出しなしで続けて並ぶ（sys_nq_element / sys_hq_element）。
+// HQ の値があるときだけ「通常品：」「HQ：」を付けて区別する。
+function ldsMarkQuality(h, strip) {
+  const Q = "sys_(nq|hq)_element";
+  const hasHq = new RegExp(`<(ul|span|div)[^>]*class="[^"]*sys_hq_element[^"]*"[^>]*>\\s*<(li|span|div|h3)`, "i").test(h);
+  const NAMES = { "Recast Time": "再使用時間" };
+  // 性能の表（物理基本性能・再使用時間など）：項目名と値を組にして「項目（HQ）：値」の行にする
+  h = h.replace(/<div class="db-view__item_spec">([\s\S]*?)(?=<div class="db-popup__inner"|<h3|<hr)/, (all, body) => {
+    const names = [...body.matchAll(/item_spec__name[^"]*">([^<]*)</g)].map((m) => NAMES[m[1].trim()] || m[1].trim());
+    if (!names.length) return all;
+    const rows = [];
+    for (const part of body.split(/<div class="clearfix/).slice(1)) {
+      const vals = [...part.matchAll(/item_spec__value[^"]*">\s*(?:<strong>)?([^<]*)/g)].map((m) => m[1].trim());
+      if (!vals.length) continue;
+      const q = /sys_hq_element/.test(part.slice(0, 80)) ? "（HQ）" : hasHq && /sys_nq_element/.test(part.slice(0, 80)) ? "（通常品）" : "";
+      vals.forEach((v, i) => { if (v && names[i]) rows.push(`<p>${names[i]}${q}：${v}</p>`); });
+    }
+    return rows.length ? `\n${rows.join("\n")}\n` : all;
+  });
+  if (!hasHq) return h;
+  const label = (q) => (q === "hq" ? "HQ：" : "通常品：");
+  // ボーナスなど、見出しから始まるかたまり：見出しに（通常品）（HQ）を付ける
+  h = h.replace(new RegExp(`(<div[^>]*class="[^"]*${Q}[^"]*"[^>]*>\\s*<h3[^>]*>)([^<]*)(<\\/h3>)`, "gi"), (_, a, q, t, b) => `${a}${t.trim()}（${q === "hq" ? "HQ" : "通常品"}）${b}`);
+  // 効果の一覧：各行に付ける
+  h = h.replace(new RegExp(`<ul([^>]*class="[^"]*${Q}[^"]*"[^>]*)>([\\s\\S]*?)<\\/ul>`, "gi"), (_, attr, q, body) =>
+    `<ul${attr}>${body.replace(/<li([^>]*)>/gi, `<li$1>${label(q)}`)}</ul>`);
+  // 買取価格など：<span class=nq><span>買取価格:</span>15 Gil</span>
+  h = h.replace(new RegExp(`<span[^>]*class="[^"]*${Q}[^"]*"[^>]*>((?:<span[^>]*>[^<]*<\\/span>)?[^<]*)<\\/span>`, "gi"), (_, q, body) => {
+    const t = strip(body);
+    return t ? `\n${label(q)}${t}\n` : "";
+  });
+  // 再使用時間など：<div class=nq><div><strong>5m</strong></div></div>（表や一覧を含むものはそのまま）
+  h = h.replace(new RegExp(`<div[^>]*class="[^"]*${Q}[^"]*"[^>]*>((?:(?!<\\/?(?:div|table|ul|h\\d)[\\s>])[\\s\\S])*?(?:<div[^>]*>(?:(?!<\\/?(?:div|table|ul|h\\d)[\\s>])[\\s\\S])*?<\\/div>\\s*)?)<\\/div>`, "gi"), (_, q, body) => {
+    const t = strip(body);
+    return t ? `\n${label(q)}${t}\n` : "";
+  });
+  return h;
+}
 function ldsStructured(html) {
   const strip = (s) => ldsText(s).replace(/\s+/g, " ").trim();
   let h = html
     .replace(/<script[\s\S]*?<\/script>|<style[\s\S]*?<\/style>|<img[^>]*>/g, "")
     .replace(/<br\s*\/?>/gi, " ");
+  h = ldsMarkQuality(h, strip);
   // いちばん内側の <li> から順に、中身を1行にする（入れ子は親の行にまとまる）
   for (let i = 0; i < 6; i++) {
     const n = h.replace(/<li[^>]*>((?:(?!<li[\s>])[\s\S])*?)<\/li>/gi, (_, x) => `\u0001${strip(x)}\u0002`);
@@ -402,9 +441,21 @@ function ldsStructured(html) {
   h = h.replace(/<(h[2-5])[^>]*>([\s\S]*?)<\/\1>/gi, (_, t, x) => `\n${t === "h2" ? "" : "■ "}${strip(x)}\n`);
   h = h.replace(/\u0001/g, "\n").replace(/\u0002/g, "\n");
   const out = [];
+  let pendKey = "";
   for (let line of ldsText(h).split("\n")) {
     line = line.replace(/\s+/g, " ").trim();
     if (!line || /^(0|>|DATA|INFORMATION|■ DATA|■ INFORMATION)$/.test(line)) continue;
+    // 「Recast Time」の次の行は値：「再使用時間：5m」「再使用時間（HQ）：4m30s」にまとめる
+    if (line === "Recast Time") { pendKey = "再使用時間"; continue; }
+    line = line.replace(/^■ (Effects|Bonuses|Materia|Craft & Repair)/, (_, w) => "■ " + { Effects: "効果", Bonuses: "ボーナス", Materia: "マテリア", "Craft & Repair": "製作・修理" }[w]);
+    if (pendKey) {
+      const q = line.match(/^(通常品|HQ)：(.+)$/);
+      if (q) { out.push(`${pendKey}（${q[1]}）：${q[2]}`); continue; }
+      const k = pendKey; pendKey = "";
+      if (line.length <= 12 && !line.startsWith("■")) { out.push(`${k}：${line}`); continue; }
+    }
+    // 「通常品：買取価格: 15 Gil」→「買取価格（通常品）：15 Gil」
+    line = line.replace(/^(通常品|HQ)：([^:：]{1,10})[:：]\s*(.+)$/, "$2（$1）：$3");
     if (/^[0 ／]+$/.test(line)) continue;
     // 座標や個数だけの行は、前の行につなげる
     if (out.length && /^(X:[\d.]+ Y:[\d.]+.*|[\d,]+)$/.test(line) && !out[out.length - 1].startsWith("■")) { out[out.length - 1] += " " + line; continue; }
