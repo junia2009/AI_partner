@@ -2175,6 +2175,23 @@ function ktokens(str) {
 let kManifest = null, kManifestLoading = null;
 const kLoaded = new Set();
 const kShardLoading = new Map();
+// 読み込んだ分野は、最近使った順に 4 つまで手元に置き、それより古いものは手放す（メモリ節約）
+const kShardData = new Map();   // file → 読み込んだ中身（作り直しに使う）
+const kUsedAt = new Map();      // file → 最後に使った時刻
+const K_MAX_LAZY = 4;
+function kEvict(protect) {
+  const lazy = kManifest.shards.filter((s) => !s.preload && kLoaded.has(s.file));
+  if (lazy.length <= K_MAX_LAZY) return;
+  const drop = lazy.filter((s) => !protect.has(s.file))
+    .sort((a, b) => (kUsedAt.get(a.file) || 0) - (kUsedAt.get(b.file) || 0))
+    .slice(0, lazy.length - K_MAX_LAZY);
+  if (!drop.length) return;
+  for (const s of drop) { kLoaded.delete(s.file); kShardData.delete(s.file); }
+  // 索引を、残した分野だけで作り直す
+  kIndex = null;
+  for (const data of kShardData.values()) kAddChunks(data);
+  if (!kIndex) kIndex = { docs: [], chunks: [], df: new Map(), tfs: [], avg: 1 };
+}
 function kAddChunks(data) {
   if (!kIndex) kIndex = { docs: [], chunks: [], df: new Map(), tfs: [], avg: 1 };
   const base = kIndex.docs.length;
@@ -2195,7 +2212,7 @@ async function kLoadShard(sh) {
   if (kLoaded.has(sh.file)) return;
   if (!kShardLoading.has(sh.file)) {
     kShardLoading.set(sh.file, fetch(sh.file, { cache: "no-cache" }).then((r) => (r.ok ? r.json() : null)).catch(() => null).then((data) => {
-      if (data && !kLoaded.has(sh.file)) { kAddChunks(data); kLoaded.add(sh.file); }
+      if (data && !kLoaded.has(sh.file)) { kAddChunks(data); kLoaded.add(sh.file); kShardData.set(sh.file, data); }
       kShardLoading.delete(sh.file);
     }));
   }
@@ -2220,12 +2237,18 @@ async function loadKnowledgeFor(text) {
   const q = String(text || "").normalize("NFKC");
   const ql = q.toLowerCase();
   const terms = q.match(/[\u30a0-\u30ffー・]{3,}|[\u3400-\u9fff々]{3,}/g) || [];
-  const need = kManifest.shards.filter((s) => !s.preload && !kLoaded.has(s.file) && s.keys.some((k) => {
+  const matched = kManifest.shards.filter((s) => !s.preload && s.keys.some((k) => {
     const kl = k.toLowerCase();
     if (/^[a-z0-9]+$/.test(kl)) return new RegExp(`(^|[^a-z0-9])${kl}([^a-z0-9]|$)`).test(ql); // 英字の略称は単語として
     return q.includes(k) || terms.some((t) => k.includes(t));
   }));
+  const now = Date.now();
+  for (const s of matched) kUsedAt.set(s.file, now);
+  // 話題の分野も「使った」ことにする（続きの質問で捨てないように）
+  if (typeof kTopic !== "undefined" && kTopic.dom) for (const s of kManifest.shards) if (s.name === kTopic.dom || s.name.startsWith(kTopic.dom + "/")) if (kLoaded.has(s.file)) kUsedAt.set(s.file, Math.max(kUsedAt.get(s.file) || 0, now - 1));
+  const need = matched.filter((s) => !kLoaded.has(s.file));
   if (need.length) await Promise.all(need.map(kLoadShard));
+  kEvict(new Set(matched.map((s) => s.file)));
   return kIndex;
 }
 // BM25 で断片に点数を付け、高い順に返す
@@ -3531,6 +3554,12 @@ function addMsg(role, text) {
   $("log").scrollTop = $("log").scrollHeight;
   return el;
 }
+// 画面に残す吹き出しは直近の分だけ（古いものは画面から外す。パラスの会話の履歴はそのまま）
+const LOG_KEEP = 80;
+new MutationObserver(() => {
+  const log = $("log");
+  while (log.children.length > LOG_KEEP) log.firstElementChild.remove();
+}).observe($("log"), { childList: true });
 function renderHistory() {
   $("log").innerHTML = "";
   for (const m of history) {
@@ -4636,7 +4665,17 @@ const wake = { model: null, loading: null, stream: null, ctx: null, node: null, 
 const WAKE_CONF = 0.95;       // 「プラス」などの聞き違いを避けるため、かなり確かなときだけ反応する
 const WAKE_KEEP_SEC = 15;     // 「パラス、明日の予定は？」の続きを拾うため、直近の音を少しだけ手元に残す（外へは送らない）
 function wakeWanted() {
-  return !!settings.wakeWord && document.visibilityState === "visible" && document.body.dataset.state === "idle" && !busy && !recogActive;
+  return !!settings.wakeWord && document.visibilityState === "visible" && document.body.dataset.state === "idle" && !busy && !recogActive && !document.querySelector("dialog[open]");
+}
+// 音声認識をまるごと捨てて、メモリ（約 300MB）を返す。次に必要になったら読み込み直す（端末に保存済みなので数秒）
+function wakeUnload(why) {
+  wakeStop();
+  const m = wake.model;
+  wake.model = null; wake.loading = null;
+  if (m) {
+    try { m.terminate(); } catch {}
+    diag(`👂 呼びかけの音声認識を解放（${why}）`);
+  }
 }
 async function wakeLoadModel() {
   if (wake.model) return wake.model;
@@ -4786,7 +4825,15 @@ function wakeRefresh() {
   wakeTimer = setTimeout(() => { if (wakeWanted()) wakeStart(); }, 700);
 }
 new MutationObserver(wakeRefresh).observe(document.body, { attributes: true, attributeFilter: ["data-state"] });
-document.addEventListener("visibilitychange", wakeRefresh);
+document.addEventListener("visibilitychange", () => {
+  // アプリを裏に回したら、呼びかけの音声認識を捨ててメモリを返す
+  if (document.hidden) wakeUnload("アプリを裏に回した");
+  else wakeRefresh();
+});
+// 設定などを開いている間も捨てる（閉じたら読み込み直す）
+for (const d of document.querySelectorAll("dialog")) {
+  new MutationObserver(() => { if (d.open) wakeUnload("設定を開いた"); else wakeRefresh(); }).observe(d, { attributes: true, attributeFilter: ["open"] });
+}
 // ブラウザは、画面に一度触れるまでマイクと音を使えない。最初のタップで呼びかけ待ちを始める
 const wakeUnlock = () => {
   if (wake.unlocked) return;
