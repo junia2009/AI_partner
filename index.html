@@ -898,9 +898,9 @@ const PALLAS_SYSTEM_PROMPT = `あなたは「パラス」。マスター専属�
 - 流したら「〇〇を流します」と短く一言だけ。曲の説明は聞かれたときだけします。
 
 # 景色（画面の背景）
-- 画面の背景には、電脳空間・夜の街の上空・星空・雲の上（朝焼け・青空・夕焼け）・雨の夜のどれかの景色が映っています。今の景色は発言の先頭の [景色] でわかります。
+- 画面の背景には、電脳空間・街の上空（朝焼け・昼・夕暮れ・夜）・成層圏の星空・雲の上（朝焼け・青空・夕焼け）・雨の街のどれかの景色が映っています。今の景色は発言の先頭の [景色] でわかります。
 - これはあなたの姿を見せるための演出です。マスターが実際にいる場所ではありません。景色を理由に「ここは電脳空間なので近くがわからない」などと言ってはいけません。
-- 「宇宙に行こう」「雨の景色がいい」「景色を変えて」などと頼まれたら travel_to で景色を変えます。移動は返事のあとに行うので、「行きましょう」くらいの短い一言を添えます。
+- 「宇宙に行こう」「雨の景色がいい」「景色を変えて」などと頼まれたら travel_to で景色を変えます。「夜の街」「夕暮れの街」のように時間帯を言われたら、time も指定します（夜の街 → place: city, time: night）。移動は返事のあとに行うので、「行きましょう」くらいの短い一言を添えます。
 - 「近くの〇〇」「この辺の〇〇」と聞かれたら、景色に関係なく maps_search を near_me: true で使います。マスターの実際の現在地は、端末の位置情報から自動で取得されます。
 
 # 補足
@@ -1144,7 +1144,12 @@ const TOOLS = [
         place: {
           type: "string",
           enum: ["cyber", "city", "space", "sky:dawn", "sky:day", "sky:sunset", "rain"],
-          description: "cyber=電脳空間、city=夜の街の上空、space=星空・宇宙、sky:dawn=雲の上の朝焼け、sky:day=雲の上の青空、sky:sunset=雲の上の夕焼け、rain=雨の夜",
+          description: "cyber=電脳空間、city=街の上空、space=成層圏の星空・宇宙、sky:dawn=雲の上の朝焼け、sky:day=雲の上の青空、sky:sunset=雲の上の夕焼け、rain=雨の街",
+        },
+        time: {
+          type: "string",
+          enum: ["now", "night", "dawn", "day", "sunset"],
+          description: "city と rain の時間帯。「夜の街」なら night、「夕暮れの街」なら sunset、「朝焼けの街」なら dawn、「昼の街」なら day。時間帯を言われていなければ now（今の時刻に合わせる）",
         },
       },
       required: ["place"],
@@ -3478,9 +3483,13 @@ async function runTool(name, input) {
   if (name === "travel_to") {
     const place = input?.place;
     if (!PLACE_NAMES[place]) return { error: "place が不正です" };
-    if (window.__pallasSceneId === place) return { result: `すでに${PLACE_NAMES[place]}にいます` };
-    pendingTravel = place;
-    return { result: `完了（${PLACE_NAMES[place]}への移動は、返事のあとに自動で行われる）` };
+    const time = ["night", "dawn", "day", "sunset"].includes(input?.time) ? input.time : "";
+    const id = time && (place === "city" || place === "rain") ? `${place}:${time}` : place;
+    const TIME_NAMES = { night: "夜の", dawn: "朝焼けの", day: "昼の", sunset: "夕暮れの" };
+    const label = time && id !== place ? `${TIME_NAMES[time]}${place === "rain" ? "雨の街" : "街の上空"}` : PLACE_NAMES[place];
+    if (window.__pallasSceneId === id) return { result: `すでに${label}にいます` };
+    pendingTravel = id;
+    return { result: `完了（${label}への移動は、返事のあとに自動で行われる）` };
   }
   return { error: `不明なツール: ${name}` };
 }
@@ -6634,7 +6643,7 @@ try {
     }
     ensureWorld(want.kind).then((w) => {
       if (String(window.__pallasSceneId || "") !== sceneId) return;
-      const tod = forcedTod || (["dawn", "day", "sunset"].includes(variant) ? variant : null);
+      const tod = (["night", "dawn", "day", "sunset"].includes(variant) ? variant : null) || forcedTod;
       const enter = () => {
         world = w;
         curScene = id; curArea = want.area;
@@ -6673,7 +6682,7 @@ try {
   setInterval(() => {
     if (!worldOn) return;
     const variant = String(window.__pallasSceneId || "").split(":")[1];
-    const tod = forcedTod || (["dawn", "day", "sunset"].includes(variant) ? variant : null);
+    const tod = (["night", "dawn", "day", "sunset"].includes(variant) ? variant : null) || forcedTod;
     const next = sunFor(tod);
     if (next !== curTod) { curTod = next; spotLabel(); applyLight(); }
   }, 60000);
@@ -6759,7 +6768,7 @@ try {
     if (!want || !worldOn || !world || reduceMotion) return false;
     if (travelId) { queuedTravel = toId; return true; } // 飛んでいる途中なら、着いてから次へ
     const w = await ensureWorld(want.kind);
-    const tod = forcedTod || (["dawn", "day", "sunset"].includes(variant) ? variant : null);
+    const tod = (["night", "dawn", "day", "sunset"].includes(variant) ? variant : null) || forcedTod;
     travelId = toId;
     travelDest = (AREA_LABEL[id === "rain" ? "rain" : want.area] || AREA_LABEL.city)[sunFor(tod)] || "";
     sunFor(curArea === "cyber" ? tod : forcedTod || null); // 太陽の向きは今の場所のまま
