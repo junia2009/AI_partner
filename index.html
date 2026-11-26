@@ -71,6 +71,12 @@
   body[data-world] .info-panel { background: rgba(12,17,28,.97); }
   /* 設定などを開いている間は、景色とパラスを隠して描くのも止める（メモリと電池の節約） */
   body:has(dialog[open]) #world, body:has(dialog[open]) #pallasCanvas, body:has(dialog[open]) #bg, body:has(dialog[open]) .world-snap { visibility: hidden; }
+  /* Excel の表のカード */
+  .sheet-wrap { overflow: auto; max-height: 50vh; border: 1px solid var(--line); border-radius: 8px; }
+  .sheet-table { border-collapse: collapse; font-size: 12px; white-space: nowrap; }
+  .sheet-table th, .sheet-table td { border: 1px solid rgba(124,196,255,.12); padding: 3px 6px; }
+  .sheet-table th { background: rgba(124,196,255,.08); color: var(--muted); font-weight: 500; position: sticky; top: 0; }
+  .sheet-table tr th:first-child { position: sticky; left: 0; }
   .world-snap { position: fixed; inset: 0; width: 100%; height: 100%; z-index: 0; pointer-events: none; display: block; opacity: 0; transform-origin: 50% 35%; }
   body::before {
     content: ""; position: fixed; inset: 0; z-index: 0; pointer-events: none;
@@ -631,6 +637,17 @@
         </div>
         <div class="hint">接続すると、パラスがカレンダーの予定の確認・追加と、Gmail の未読の確認・返信の下書きをできるようになります。メールを送信することはありません。</div>
       </div>
+      <h3 class="set-sec">Microsoft</h3>
+      <div class="field">
+        <label for="msClientId">Microsoft 連携（OneDrive・Excel）</label>
+        <input id="msClientId" type="text" placeholder="アプリケーション（クライアント）ID（xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx）" autocomplete="off">
+        <div class="google-row">
+          <span id="msStatus" class="hint"></span>
+          <button type="button" class="ghost" id="msConnectBtn">Microsoftに接続</button>
+          <button type="button" class="ghost" id="msDisconnectBtn">接続を解除</button>
+        </div>
+        <div class="hint">個人の Microsoft アカウントでサインインすると、パラスが OneDrive の Excel を読んだり、行を足したり、新しい表を作ったりできるようになります。アプリの登録手順はリポジトリの docs/microsoft.md にあります。</div>
+      </div>
       <div class="field">
         <label for="googleMapsKey">Google マップ表示用のキー</label>
         <input id="googleMapsKey" type="text" placeholder="AIza...（Maps JavaScript API 用・このサイトだけに制限したもの）" autocomplete="off">
@@ -887,6 +904,15 @@ const PALLAS_SYSTEM_PROMPT = `あなたは「パラス」。マスター専属�
 - 朝の報告では、Google につながっていれば calendar_list_events で今日の予定も確かめて伝えます。
 - お店・予定・メールを調べると、詳しい一覧（地図や時刻、ボタン）が画面のカードに表示されます。声では要点だけを伝え、「詳しくは画面に出しています」と添える程度にします。
 
+# Microsoft（OneDrive・Excel）
+- 発言の先頭に [Microsoft: OneDrive・Excel 接続中] があれば、マスターの OneDrive の Excel を読み書きできます。なければ、使おうとするとエラーになります。そのときは設定の「連携」から接続できることを短く伝えます。
+- Excel のファイル名がはっきりしないときは ms_files_search で探し、候補が複数あれば一度だけ短く確かめます。
+- 中身を聞かれたら excel_read で読んでから答えます。表は画面のカードに出るので、声では要点（合計・件数・目立つ値など）だけを伝えます。
+- 書き込みは頼まれたときだけ行います。行を足すときは excel_append_rows、決まったセルに入れるときは excel_write を使います。合計などの計算は「=SUM(B2:B10)」のような数式で入れて、Excel に計算させます。
+- すでに値が入っているセルを上書きするときは、元の値を伝えてマスターに確かめてから overwrite: true で書き込みます。
+- 新しい表を作るときは excel_create で作り、見出しの行を入れます。ファイル名と置き場所を一言で伝えます。
+- 書き込んだら「〇〇に3行足しました」のように一言で伝えます。
+
 # 知識（資料を調べて答える）
 - 専門的な質問や、資料に書かれていそうなこと（パラス自身の使い方も含む）は、答える前に search_knowledge で資料を調べます。
 - 見つかった資料の内容を根拠に答えます。「資料によると」「〇〇の資料では」のように出典を口にせず、自分の知識として自然に話します。資料にないことを資料に書いてあるかのように言いません。
@@ -934,7 +960,7 @@ const store = {
 };
 const settings = Object.assign(
   { apiKey: "", voiceURI: "", rate: 1.1, pitch: 1.0, autoListen: false, model: "haiku", autoResetMin: 60, showTiming: true, diagLog: false,
-    ttsEngine: "browser", asrEngine: "auto", fishRelayUrl: "", googleClientId: "", googleMapsKey: "", fishApiKey: "", fishVoice: "45c5d3723c9c42f598e4776dcfd5f02d", fishVoiceCustom: "",
+    ttsEngine: "browser", asrEngine: "auto", fishRelayUrl: "", googleClientId: "", msClientId: "", googleMapsKey: "", fishApiKey: "", fishVoice: "45c5d3723c9c42f598e4776dcfd5f02d", fishVoiceCustom: "",
     homeDataUrl: "https://junia2009.github.io/smart_home_db/",
     gomiUrl: "https://junia2009.github.io/higashikurume_gomi/", gomiArea: "" },
   store.get("pallas.settings", {})
@@ -1243,6 +1269,91 @@ const TOOLS = [
       additionalProperties: false,
     },
     eager_input_streaming: true,
+  },
+  {
+    name: "ms_files_search",
+    description: "マスターの OneDrive のファイルを探す。query を省くと最近使った Excel ファイル。結果の id は excel_ の道具の file に使える。",
+    input_schema: {
+      type: "object",
+      properties: {
+        query: { type: "string", description: "ファイル名の一部など（例：家計簿）" },
+        type: { type: "string", enum: ["excel", "all"], description: "excel=Excel だけ（既定）、all=すべてのファイル" },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "excel_read",
+    description: "OneDrive の Excel ファイルを読む（シート一覧・テーブル名と、指定した範囲か使っている範囲の値）。画面に表のカードを出す。",
+    input_schema: {
+      type: "object",
+      properties: {
+        file: { type: "string", description: "ファイルの id、「フォルダ/名前.xlsx」、または名前（例：家計簿）" },
+        sheet: { type: "string", description: "シート名。省略で最初のシート" },
+        range: { type: "string", description: "範囲（例：A1:F30）。省略で使っている範囲すべて" },
+      },
+      required: ["file"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "excel_write",
+    description: "OneDrive の Excel の決まったセルに値や数式を書き込む。range は左上のセルだけでよい（values の大きさから広げる）。「=」で始まる文字は数式になる。すでに値があるセルは、マスターに確かめてから overwrite: true で上書きする。",
+    input_schema: {
+      type: "object",
+      properties: {
+        file: { type: "string", description: "ファイルの id・パス・名前" },
+        sheet: { type: "string", description: "シート名。省略で最初のシート" },
+        range: { type: "string", description: "書き込む場所（例：B2 や B2:D4）" },
+        values: { type: "array", items: { type: "array" }, description: "行ごとの値（2 次元の配列）。例：[[\"日付\",\"金額\"],[\"11/26\",800]]" },
+        overwrite: { type: "boolean", description: "すでに値があるセルを上書きしてよいか（マスターが了承したときだけ true）" },
+      },
+      required: ["file", "range", "values"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "excel_append_rows",
+    description: "OneDrive の Excel の表の一番下に行を足す（家計簿や記録の追記に）。table を指定するとそのテーブルの最後に足す。",
+    input_schema: {
+      type: "object",
+      properties: {
+        file: { type: "string", description: "ファイルの id・パス・名前" },
+        sheet: { type: "string", description: "シート名。省略で最初のシート" },
+        table: { type: "string", description: "テーブル名（あれば）" },
+        values: { type: "array", items: { type: "array" }, description: "足す行（2 次元の配列）" },
+      },
+      required: ["file", "values"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "excel_add_sheet",
+    description: "OneDrive の Excel にシートを追加する。",
+    input_schema: {
+      type: "object",
+      properties: {
+        file: { type: "string", description: "ファイルの id・パス・名前" },
+        name: { type: "string", description: "新しいシートの名前" },
+      },
+      required: ["file", "name"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "excel_create",
+    description: "OneDrive に新しい Excel ファイルを作る。header を渡すと 1 行目に見出しを入れる。",
+    input_schema: {
+      type: "object",
+      properties: {
+        name: { type: "string", description: "ファイル名（例：家計簿2026）" },
+        folder: { type: "string", description: "置くフォルダ（例：ドキュメント）。省略で一番上" },
+        sheets: { type: "array", items: { type: "string" }, description: "シート名の一覧。省略で Sheet1" },
+        header: { type: "array", items: { type: "string" }, description: "1 行目の見出し（例：[\"日付\",\"項目\",\"金額\"]）" },
+      },
+      required: ["name"],
+      additionalProperties: false,
+    },
   },
   {
     name: "maps_search",
@@ -2640,6 +2751,335 @@ function googleError(err) {
   return { error: `Google でエラーが起きました：${err.message}` };
 }
 
+
+// ===== Microsoft 365（個人の Microsoft アカウント：OneDrive・Excel） =====
+// ブラウザだけで Microsoft にサインインする（MSAL）。サインインは画面ごと Microsoft へ移って戻ってくる方式
+// （iPhone のホーム画面アプリではポップアップが使えないため）。長期のログイン情報は MSAL がこの端末に保存する。
+const MS_SCOPES = ["User.Read", "Files.ReadWrite"];
+const MS_GRAPH = "https://graph.microsoft.com/v1.0";
+let msalApp = null, msalReady = null;
+function msConnected() { return !!store.get("pallas.msAccount", ""); }
+function msRedirectUri() { return location.origin + location.pathname.replace(/index\.html$/, ""); }
+function loadMsal() {
+  if (msalReady) return msalReady;
+  const clientId = (settings.msClientId || "").trim();
+  if (!clientId) return Promise.reject(Object.assign(new Error("Microsoft のアプリケーション（クライアント）ID が設定されていません"), { needConnect: true }));
+  msalReady = new Promise((resolve, reject) => {
+    const start = async () => {
+      try {
+        msalApp = new msal.PublicClientApplication({
+          auth: { clientId, authority: "https://login.microsoftonline.com/consumers", redirectUri: msRedirectUri() },
+          cache: { cacheLocation: "localStorage" },
+        });
+        await msalApp.initialize();
+        const r = await msalApp.handleRedirectPromise(); // サインインから戻ってきたとき
+        if (r?.account) {
+          msalApp.setActiveAccount(r.account);
+          store.set("pallas.msAccount", r.account.username || "connected");
+          addMsg("system", `Microsoft に接続しました（${r.account.username || "個人アカウント"}）。OneDrive の Excel が使えます。`);
+        } else {
+          const acc = msalApp.getActiveAccount() || msalApp.getAllAccounts()[0];
+          if (acc) msalApp.setActiveAccount(acc);
+          else if (msConnected()) store.remove("pallas.msAccount");
+        }
+        renderMsStatus();
+        resolve(msalApp);
+      } catch (e) { msalReady = null; reject(e); }
+    };
+    if (window.msal) { start(); return; }
+    const sc = document.createElement("script");
+    sc.src = "https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.28.1/lib/msal-browser.min.js";
+    sc.onload = start;
+    sc.onerror = () => { msalReady = null; reject(new Error("Microsoft のログイン用スクリプトを読み込めませんでした")); };
+    document.head.appendChild(sc);
+  });
+  return msalReady;
+}
+async function connectMicrosoft() {
+  const clientId = ($("msClientId")?.value || settings.msClientId || "").trim();
+  if (!clientId) { addMsg("error", "設定で Microsoft のアプリケーション（クライアント）ID を入力してください。"); return; }
+  if (clientId !== settings.msClientId) { settings.msClientId = clientId; store.set("pallas.settings", settings); msalReady = null; }
+  try {
+    const app = await loadMsal();
+    addMsg("system", "Microsoft のサインイン画面へ移ります。サインインすると、この画面に戻ってきます。");
+    await app.loginRedirect({ scopes: MS_SCOPES, prompt: "select_account", redirectUri: msRedirectUri() });
+  } catch (err) {
+    addMsg("error", `Microsoft に接続できませんでした（${err.message}）。`);
+  }
+}
+async function disconnectMicrosoft() {
+  try { const app = await loadMsal(); await app.clearCache(); } catch {}
+  store.remove("pallas.msAccount");
+  renderMsStatus();
+  addMsg("system", "Microsoft との接続を解除しました。");
+}
+function renderMsStatus() {
+  const elx = $("msStatus");
+  if (elx) elx.textContent = msConnected() ? `接続中（${store.get("pallas.msAccount", "")}）` : "未接続";
+}
+async function msToken() {
+  const app = await loadMsal();
+  const account = app.getActiveAccount() || app.getAllAccounts()[0];
+  if (!account) throw Object.assign(new Error("Microsoft に接続されていません"), { needConnect: true });
+  try {
+    const r = await app.acquireTokenSilent({ scopes: MS_SCOPES, account });
+    return r.accessToken;
+  } catch (err) {
+    if (err instanceof msal.InteractionRequiredAuthError) throw Object.assign(new Error("Microsoft のログインの有効期限が切れました"), { needConnect: true });
+    throw err;
+  }
+}
+async function graph(method, path, body, opts = {}) {
+  const token = await msToken();
+  const res = await fetch(path.startsWith("http") ? path : MS_GRAPH + path, {
+    method,
+    headers: { Authorization: `Bearer ${token}`, ...(body && !opts.raw ? { "Content-Type": "application/json" } : {}), ...(opts.headers || {}) },
+    body: body ? (opts.raw ? body : JSON.stringify(body)) : undefined,
+  });
+  if (res.status === 204) return {};
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) { const e = new Error(data.error?.message || `HTTP ${res.status}`); e.status = res.status; e.code = data.error?.code; throw e; }
+  return data;
+}
+function msError(err) {
+  if (err.needConnect) return { error: `${err.message}。マスターに、設定の「連携」→「Microsoftに接続」を押してもらうよう短く伝えること` };
+  if (err.status === 404) return { error: "そのファイル・シート・範囲が見つかりませんでした。名前を確かめるか、ms_files_search で探すこと" };
+  if (err.status === 423 || err.code === "resourceLocked") return { error: "ファイルがほかで開かれていて、いま書き込めません。少し待つか、Excel で閉じてもらうこと" };
+  return { error: `Microsoft でエラーが起きました：${err.message}` };
+}
+
+// --- OneDrive のファイル ---
+const XLSX_RE = /\.xlsx$/i;
+function driveItemLine(it) {
+  const when = it.lastModifiedDateTime ? new Date(it.lastModifiedDateTime) : null;
+  const where = it.parentReference?.path ? it.parentReference.path.replace(/^\/drive\/root:?/, "") || "/" : "";
+  return `- ${it.name}（id: ${it.id}${when ? `、更新: ${fmtDay(when)} ${fmtHM(when)}` : ""}${where ? `、場所: ${where}` : ""}）`;
+}
+async function msFilesSearch(input) {
+  try {
+    const q = typeof input?.query === "string" ? input.query.trim() : "";
+    const excelOnly = input?.type !== "all";
+    const data = q
+      ? await graph("GET", `/me/drive/root/search(q='${encodeURIComponent(q.replace(/'/g, "''"))}')?$top=40&$select=id,name,lastModifiedDateTime,parentReference,webUrl,file,folder`)
+      : await graph("GET", `/me/drive/recent?$top=40`);
+    let items = (data.value || []).map((it) => it.remoteItem ? { ...it.remoteItem, id: it.remoteItem.id || it.id } : it);
+    if (excelOnly) items = items.filter((it) => XLSX_RE.test(it.name || ""));
+    items = items.slice(0, 20);
+    if (!items.length) return { result: q ? `「${q}」に当てはまる${excelOnly ? " Excel " : ""}ファイルは見つかりませんでした` : "最近使った Excel ファイルはありません" };
+    return { result: items.map(driveItemLine).join("\n") };
+  } catch (err) { return msError(err); }
+}
+// ファイルの指定（id・「フォルダ/名前.xlsx」・名前の一部）から、OneDrive のファイルを特定する
+async function msResolveFile(file) {
+  const f = String(file || "").trim();
+  if (!f) throw Object.assign(new Error("file が空です"), { status: 400 });
+  if (/^[0-9A-F]+![0-9A-Za-z.]+$/i.test(f)) return graph("GET", `/me/drive/items/${encodeURIComponent(f)}?$select=id,name,webUrl`);
+  if (f.includes("/")) {
+    const path = f.replace(/^\/+/, "");
+    return graph("GET", `/me/drive/root:/${path.split("/").map(encodeURIComponent).join("/")}?$select=id,name,webUrl`);
+  }
+  const name = XLSX_RE.test(f) ? f : f;
+  const data = await graph("GET", `/me/drive/root/search(q='${encodeURIComponent(name.replace(/\.xlsx$/i, "").replace(/'/g, "''"))}')?$top=40&$select=id,name,webUrl`);
+  const xs = (data.value || []).filter((it) => XLSX_RE.test(it.name || ""));
+  const exact = xs.find((it) => it.name.toLowerCase() === (XLSX_RE.test(f) ? f : f + ".xlsx").toLowerCase());
+  const hit = exact || xs[0];
+  if (!hit) throw Object.assign(new Error(`「${f}」という Excel ファイルが見つかりません`), { status: 404 });
+  return hit;
+}
+const wbPath = (id) => `/me/drive/items/${encodeURIComponent(id)}/workbook`;
+const sheetPath = (id, sheet) => `${wbPath(id)}/worksheets/${encodeURIComponent(sheet)}`;
+async function msSheetName(id, sheet) {
+  const data = await graph("GET", `${wbPath(id)}/worksheets?$select=name,position`);
+  const names = (data.value || []).sort((a, b) => a.position - b.position).map((w) => w.name);
+  if (!sheet) return { name: names[0], names };
+  const hit = names.find((n) => n === sheet) || names.find((n) => n.toLowerCase() === String(sheet).toLowerCase());
+  if (!hit) throw Object.assign(new Error(`シート「${sheet}」がありません（あるシート：${names.join("、")}）`), { status: 404 });
+  return { name: hit, names };
+}
+// 列番号 ⇔ 列の文字（1 → A、27 → AA）
+function colName(n) { let s = ""; while (n > 0) { const m = (n - 1) % 26; s = String.fromCharCode(65 + m) + s; n = Math.floor((n - 1) / 26); } return s; }
+function colNum(s) { let n = 0; for (const ch of s.toUpperCase()) n = n * 26 + (ch.charCodeAt(0) - 64); return n; }
+function parseCell(a) { const m = /^\$?([A-Za-z]{1,3})\$?(\d+)$/.exec(String(a).trim()); return m ? { c: colNum(m[1]), r: +m[2] } : null; }
+function cellsText(values, startAddr, maxRows = 120) {
+  const st = parseCell(String(startAddr || "A1").split(":")[0].replace(/^.*!/, "")) || { c: 1, r: 1 };
+  const rows = values.slice(0, maxRows).map((row, i) => `${st.r + i}: ` + row.map((v, j) => `${colName(st.c + j)}=${v === "" || v == null ? "（空）" : v}`).join(" | "));
+  if (values.length > maxRows) rows.push(`…（ほか ${values.length - maxRows} 行）`);
+  return rows.join("\n");
+}
+function showSheetPanel(title, values, startAddr, webUrl) {
+  const st = parseCell(String(startAddr || "A1").split(":")[0].replace(/^.*!/, "")) || { c: 1, r: 1 };
+  openInfoPanel(`📊 ${title}`, (body) => {
+    if (!values.length) { body.appendChild(el("div", "info-empty", "空のシートです")); return; }
+    const wrap = el("div", "sheet-wrap");
+    const table = document.createElement("table");
+    table.className = "sheet-table";
+    const head = document.createElement("tr");
+    head.appendChild(document.createElement("th"));
+    const cols = Math.min(26, Math.max(...values.map((r) => r.length)));
+    for (let j = 0; j < cols; j++) { const th = document.createElement("th"); th.textContent = colName(st.c + j); head.appendChild(th); }
+    table.appendChild(head);
+    values.slice(0, 200).forEach((row, i) => {
+      const tr = document.createElement("tr");
+      const th = document.createElement("th"); th.textContent = st.r + i; tr.appendChild(th);
+      for (let j = 0; j < cols; j++) { const td = document.createElement("td"); td.textContent = row[j] ?? ""; tr.appendChild(td); }
+      table.appendChild(tr);
+    });
+    wrap.appendChild(table);
+    body.appendChild(wrap);
+    if (webUrl) { const acts = el("div", "info-actions"); acts.appendChild(link("Excel で開く", webUrl)); body.appendChild(acts); }
+  });
+}
+async function excelRead(input) {
+  try {
+    const f = await msResolveFile(input?.file);
+    const { name: sheet, names } = await msSheetName(f.id, input?.sheet);
+    const range = typeof input?.range === "string" && input.range.trim() ? input.range.trim() : "";
+    const data = range
+      ? await graph("GET", `${sheetPath(f.id, sheet)}/range(address='${encodeURIComponent(range)}')?$select=address,values,text`)
+      : await graph("GET", `${sheetPath(f.id, sheet)}/usedRange(valuesOnly=true)?$select=address,values,text`);
+    const values = (data.text || data.values || []).map((r) => r.map((v) => (v === null ? "" : v)));
+    const addr = (data.address || "A1").replace(/^.*!/, "");
+    let tables = [];
+    try { tables = ((await graph("GET", `${sheetPath(f.id, sheet)}/tables?$select=name`)).value || []).map((t) => t.name); } catch {}
+    showSheetPanel(`${f.name}・${sheet}`, values, addr, f.webUrl);
+    return {
+      result: `ファイル: ${f.name}（id: ${f.id}）\nシート一覧: ${names.join("、")}\n読んだシート: ${sheet}　範囲: ${addr}${tables.length ? `\nテーブル: ${tables.join("、")}` : ""}\n` +
+        (values.length ? cellsText(values, addr) : "（空のシート）") + "\n画面に表のカードを出した",
+    };
+  } catch (err) { return msError(err); }
+}
+// 2 次元の値を書き込む。範囲は左上のセルだけでもよい（値の大きさから広げる）
+function rangeFor(start, values) {
+  const s = String(start || "A1").trim().replace(/^.*!/, "");
+  const st = parseCell(s.split(":")[0]);
+  if (!st) throw Object.assign(new Error(`範囲「${start}」の書き方がわかりません（例：A1、B2:D5）`), { status: 400 });
+  const rows = values.length, cols = Math.max(...values.map((r) => r.length));
+  return `${colName(st.c)}${st.r}:${colName(st.c + cols - 1)}${st.r + rows - 1}`;
+}
+function normValues(values) {
+  if (!Array.isArray(values) || !values.length) return null;
+  const rows = values.map((r) => (Array.isArray(r) ? r : [r]));
+  const cols = Math.max(...rows.map((r) => r.length));
+  return rows.map((r) => Array.from({ length: cols }, (_, j) => (r[j] === undefined || r[j] === null ? "" : r[j])));
+}
+async function excelWrite(input) {
+  try {
+    const values = normValues(input?.values);
+    if (!values) return { error: "values（2 次元の配列）が空です" };
+    const f = await msResolveFile(input?.file);
+    const { name: sheet } = await msSheetName(f.id, input?.sheet);
+    const addr = rangeFor(input?.range, values);
+    const base = `${sheetPath(f.id, sheet)}/range(address='${encodeURIComponent(addr)}')`;
+    // すでに入っている値を上書きするときは、先に確かめる
+    const before = await graph("GET", `${base}?$select=values`);
+    const filled = (before.values || []).flat().filter((v) => v !== "" && v !== null).length;
+    if (filled && !input?.overwrite) {
+      return { error: `${sheet}!${addr} にはすでに値が ${filled} 個入っています（${cellsText(before.values, addr, 10)}）。上書きしてよいかマスターに確かめてから、overwrite: true で呼び直すこと` };
+    }
+    // 「=」で始まる文字は数式として入れる
+    const hasFormula = values.some((r) => r.some((v) => typeof v === "string" && v.startsWith("=")));
+    const data = await graph("PATCH", base, hasFormula ? { formulas: values } : { values });
+    const after = (data.text || data.values || values);
+    showSheetPanel(`${f.name}・${sheet}（書き込み後）`, after, addr, f.webUrl);
+    return { result: `${f.name} の ${sheet}!${addr} に書き込みました${filled ? `（${filled} 個のセルを上書き）` : ""}\n${cellsText(after, addr, 20)}` };
+  } catch (err) { return msError(err); }
+}
+async function excelAppendRows(input) {
+  try {
+    const values = normValues(input?.values);
+    if (!values) return { error: "values（2 次元の配列）が空です" };
+    const f = await msResolveFile(input?.file);
+    // テーブルがあれば、テーブルの最後に行を足す（集計や書式がそのまま続く）
+    if (input?.table) {
+      await graph("POST", `${wbPath(f.id)}/tables/${encodeURIComponent(input.table)}/rows/add`, { values });
+      return { result: `${f.name} のテーブル「${input.table}」に ${values.length} 行足しました` };
+    }
+    const { name: sheet } = await msSheetName(f.id, input?.sheet);
+    const used = await graph("GET", `${sheetPath(f.id, sheet)}/usedRange(valuesOnly=true)?$select=address,values`);
+    const ua = (used.address || "A1").replace(/^.*!/, "");
+    const [a, b] = ua.split(":");
+    const st = parseCell(a) || { c: 1, r: 1 }, en = parseCell(b || a) || st;
+    const empty = (used.values || []).every((r) => r.every((v) => v === "" || v === null));
+    const startRow = empty ? 1 : en.r + 1;
+    const addr = rangeFor(`${colName(st.c)}${startRow}`, values);
+    const hasFormula = values.some((r) => r.some((v) => typeof v === "string" && v.startsWith("=")));
+    await graph("PATCH", `${sheetPath(f.id, sheet)}/range(address='${encodeURIComponent(addr)}')`, hasFormula ? { formulas: values } : { values });
+    return { result: `${f.name} の ${sheet} の ${addr} に ${values.length} 行足しました` };
+  } catch (err) { return msError(err); }
+}
+async function excelAddSheet(input) {
+  try {
+    const name = String(input?.name || "").trim();
+    if (!name) return { error: "name が空です" };
+    const f = await msResolveFile(input?.file);
+    await graph("POST", `${wbPath(f.id)}/worksheets/add`, { name });
+    return { result: `${f.name} にシート「${name}」を追加しました` };
+  } catch (err) { return msError(err); }
+}
+// 新しい Excel ファイルを作る（空のブックを組み立てて OneDrive に置く）
+async function excelCreate(input) {
+  try {
+    let name = String(input?.name || "").trim().replace(/[\\/:*?"<>|]/g, "");
+    if (!name) return { error: "name が空です" };
+    if (!XLSX_RE.test(name)) name += ".xlsx";
+    const folder = String(input?.folder || "").trim().replace(/^\/+|\/+$/g, "");
+    const sheets = (Array.isArray(input?.sheets) && input.sheets.length ? input.sheets : ["Sheet1"]).map((s) => String(s).slice(0, 31));
+    const bytes = makeXlsx(sheets);
+    const path = (folder ? folder + "/" : "") + name;
+    const item = await graph("PUT", `/me/drive/root:/${path.split("/").map(encodeURIComponent).join("/")}:/content?@microsoft.graph.conflictBehavior=rename`, bytes, { raw: true, headers: { "Content-Type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" } });
+    let note = "";
+    const header = normValues(input?.header ? [input.header] : null);
+    if (header) {
+      try {
+        await graph("PATCH", `${sheetPath(item.id, sheets[0])}/range(address='${encodeURIComponent(rangeFor("A1", header))}')`, { values: header });
+        note = `\n1 行目に見出し（${header[0].join("、")}）を入れました`;
+      } catch (e) { note = `\n（見出しは入れられませんでした：${e.message}）`; }
+    }
+    return { result: `OneDrive に ${item.name} を作りました（id: ${item.id}${folder ? `、場所: /${folder}` : ""}、シート: ${sheets.join("、")}）${note}` };
+  } catch (err) { return msError(err); }
+}
+// 最小限の .xlsx（ZIP）を組み立てる（圧縮なし）
+function makeXlsx(sheetNames) {
+  const esc = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  const files = {
+    "[Content_Types].xml": `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>${sheetNames.map((_, i) => `<Override PartName="/xl/worksheets/sheet${i + 1}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`).join("")}</Types>`,
+    "_rels/.rels": `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>`,
+    "xl/workbook.xml": `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets>${sheetNames.map((n, i) => `<sheet name="${esc(n)}" sheetId="${i + 1}" r:id="rId${i + 1}"/>`).join("")}</sheets></workbook>`,
+    "xl/_rels/workbook.xml.rels": `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">${sheetNames.map((_, i) => `<Relationship Id="rId${i + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet${i + 1}.xml"/>`).join("")}<Relationship Id="rId${sheetNames.length + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>`,
+    "xl/styles.xml": `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><fonts count="1"><font><sz val="11"/><name val="Calibri"/></font></fonts><fills count="2"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill></fills><borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/></cellXfs></styleSheet>`,
+  };
+  sheetNames.forEach((_, i) => { files[`xl/worksheets/sheet${i + 1}.xml`] = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData/></worksheet>`; });
+  return zipStore(files);
+}
+function zipStore(files) {
+  const enc = new TextEncoder();
+  const crcTable = Array.from({ length: 256 }, (_, n) => { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1; return c >>> 0; });
+  const crc32 = (b) => { let c = 0xffffffff; for (const x of b) c = crcTable[(c ^ x) & 0xff] ^ (c >>> 8); return (c ^ 0xffffffff) >>> 0; };
+  const parts = [], central = [];
+  let offset = 0;
+  for (const [name, text] of Object.entries(files)) {
+    const nameB = enc.encode(name), data = enc.encode(text), crc = crc32(data);
+    const local = new DataView(new ArrayBuffer(30));
+    local.setUint32(0, 0x04034b50, true); local.setUint16(4, 20, true); local.setUint16(6, 0x0800, true); local.setUint16(8, 0, true);
+    local.setUint32(14, crc, true); local.setUint32(18, data.length, true); local.setUint32(22, data.length, true); local.setUint16(26, nameB.length, true);
+    parts.push(new Uint8Array(local.buffer), nameB, data);
+    const cen = new DataView(new ArrayBuffer(46));
+    cen.setUint32(0, 0x02014b50, true); cen.setUint16(4, 20, true); cen.setUint16(6, 20, true); cen.setUint16(8, 0x0800, true);
+    cen.setUint32(16, crc, true); cen.setUint32(20, data.length, true); cen.setUint32(24, data.length, true); cen.setUint16(28, nameB.length, true);
+    cen.setUint32(42, offset, true);
+    central.push(new Uint8Array(cen.buffer), nameB);
+    offset += 30 + nameB.length + data.length;
+  }
+  const cenSize = central.reduce((a, b) => a + b.length, 0);
+  const end = new DataView(new ArrayBuffer(22));
+  end.setUint32(0, 0x06054b50, true); end.setUint16(8, Object.keys(files).length, true); end.setUint16(10, Object.keys(files).length, true);
+  end.setUint32(12, cenSize, true); end.setUint32(16, offset, true);
+  const all = [...parts, ...central, new Uint8Array(end.buffer)];
+  const out = new Uint8Array(all.reduce((a, b) => a + b.length, 0));
+  let p = 0; for (const b of all) { out.set(b, p); p += b.length; }
+  return out;
+}
+
 // --- カレンダー ---
 const WD = ["日", "月", "火", "水", "木", "金", "土"];
 function fmtDay(d) { return `${d.getMonth() + 1}/${d.getDate()}(${WD[d.getDay()]})`; }
@@ -3451,6 +3891,12 @@ async function runTool(name, input) {
   if (name === "gmail_list") return gmailList(input);
   if (name === "gmail_read") return gmailRead(input);
   if (name === "gmail_create_draft") return gmailDraft(input);
+  if (name === "ms_files_search") return msFilesSearch(input);
+  if (name === "excel_read") return excelRead(input);
+  if (name === "excel_write") return excelWrite(input);
+  if (name === "excel_append_rows") return excelAppendRows(input);
+  if (name === "excel_add_sheet") return excelAddSheet(input);
+  if (name === "excel_create") return excelCreate(input);
   if (name === "maps_search") return mapsSearch(input);
   if (name === "maps_directions") return mapsDirections(input);
   if (name === "remember") {
@@ -4447,7 +4893,7 @@ async function send(text, { hidden = false } = {}) {
   const place = window.__pallasSceneId ? `[景色: ${window.__pallasPlaceLabel || PLACE_NAMES[window.__pallasSceneId] || window.__pallasSceneId}${window.__pallasSpot ? `・${window.__pallasSpot}` : ""}]` : "";
   const tb = timersBlock();
   const td = todosBlock();
-  const gtag = googleConnected() ? "\n[Google: カレンダー・Gmail 接続中]" : "";
+  const gtag = (googleConnected() ? "\n[Google: カレンダー・Gmail 接続中]" : "") + (msConnected() ? "\n[Microsoft: OneDrive・Excel 接続中]" : "");
   const prof = userProfile();
   const ntag = prof?.callAs ? `\n[呼び名: ${prof.callAs}${prof.name ? `（名前: ${prof.name}）` : ""}]` : "";
   // 朝はじめての会話なら、返事の最初に朝のあいさつを添えてもらう
@@ -4874,6 +5320,8 @@ window.addEventListener("keydown", (e) => { if (e.key === "Escape" && !$("infoPa
 $("googleChip").addEventListener("click", () => { store.remove("pallas.gNeedReconnect"); connectGoogle(); renderGoogleStatus(); });
 $("googleConnectBtn").addEventListener("click", connectGoogle);
 $("googleDisconnectBtn").addEventListener("click", disconnectGoogle);
+$("msConnectBtn").addEventListener("click", connectMicrosoft);
+$("msDisconnectBtn").addEventListener("click", disconnectMicrosoft);
 $("todoChip").addEventListener("click", () => { $("todoPanel").hidden = !$("todoPanel").hidden; });
 $("todoClose").addEventListener("click", () => { $("todoPanel").hidden = true; });
 // 朝、操作部品以外の場所をはじめてタップしたら朝の報告を始める
@@ -4901,6 +5349,8 @@ function syncSettingsForm() {
   $("showTiming").checked = settings.showTiming;
   $("diagLog").checked = settings.diagLog;
   $("googleClientId").value = settings.googleClientId || "";
+  $("msClientId").value = settings.msClientId || "";
+  renderMsStatus();
   syncNameField();
   $("googleMapsKey").value = settings.googleMapsKey || "";
   $("homeDataUrl").value = settings.homeDataUrl || "";
@@ -5153,6 +5603,7 @@ $("settingsForm").addEventListener("submit", (e) => {
   settings.showTiming = $("showTiming").checked;
   settings.diagLog = $("diagLog").checked;
   settings.googleClientId = $("googleClientId").value.trim();
+  if (settings.msClientId !== $("msClientId").value.trim()) { settings.msClientId = $("msClientId").value.trim(); msalReady = null; }
   {
     const v = toHiragana($("callAsField").value);
     const prev = userProfile();
@@ -5230,6 +5681,11 @@ renderTodos();
 renderMorningChip();
 renderGoogleStatus();
 preloadGis();
+// Microsoft：接続済みか、サインインから戻ってきたときは、ログインの仕組みを読み込む
+if (settings.msClientId && (msConnected() || /[#&?](code|error)=/.test(location.hash + location.search))) {
+  loadMsal().catch((err) => addMsg("error", `Microsoft のログインを確かめられませんでした（${err.message}）`));
+}
+renderMsStatus();
 setInterval(renderMorningChip, 60000);
 setTimeout(() => checkTimers(true), 1500);
 // レイアウト確定後（3D表示の読み込みで高さが変わる）にも最新の発言まで送る
