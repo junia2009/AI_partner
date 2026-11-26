@@ -6423,12 +6423,6 @@ try {
     if (camera.view && Math.abs(camera.view.offsetY - offY) > 0.3) {
       camera.setViewOffset(W, H, camera.view.offsetX, offY, W, H);
       camera.updateProjectionMatrix();
-      if (wr) {
-        worldCam.setViewOffset(W, H, camera.view.offsetX, offY, W, H);
-        worldCam.updateProjectionMatrix();
-        const focal = (H / 2) / Math.tan(THREE.MathUtils.degToRad(camera.fov / 2));
-        pitchQ.setFromAxisAngle(AXIS_X, Math.atan((H * 0.46 - view.cy) / focal));
-      }
     }
   }
   function resize() {
@@ -6717,18 +6711,18 @@ try {
     const lv = saver() ? 0 : qLevel;
     return Math.max(0.6, Math.min(1.5, (window.devicePixelRatio || 1) * Q_LEVELS[lv]));
   }
+  const WORLD_FOV = 55;
   function sizeWorld() {
     if (!wr) return;
     setRendererSize(wr, worldPR(), innerWidth, innerHeight);
-    worldCam.fov = camera.fov; worldCam.aspect = camera.aspect;
-    if (camera.view && camera.view.enabled) {
-      const v = camera.view;
-      worldCam.setViewOffset(v.fullWidth, v.fullHeight, v.offsetX, v.offsetY, v.width, v.height);
-    } else worldCam.clearViewOffset();
+    // 景色は、パラスとは別の自然な視野（縦 55 度・中心はずらさない）で映す。
+    // パラスに合わせた広い視野で中心をずらすと、画面の下のほうが縦に引き伸ばされて、地球などが歪んで見えるため
+    worldCam.fov = WORLD_FOV; worldCam.aspect = innerWidth / innerHeight;
+    worldCam.clearViewOffset();
     worldCam.updateProjectionMatrix();
-    const H = innerHeight, axisY = camera.view?.enabled ? H / 2 - camera.view.offsetY : H / 2;
-    const focal = (H / 2) / Math.tan(THREE.MathUtils.degToRad(camera.fov / 2));
-    pitchQ.setFromAxisAngle(AXIS_X, Math.atan((H * 0.46 - axisY) / focal));
+    // 地平線が画面の真ん中より少し上に来るよう、少しだけ下を向かせる
+    const H = innerHeight, focal = (H / 2) / Math.tan(THREE.MathUtils.degToRad(WORLD_FOV / 2));
+    pitchQ.setFromAxisAngle(AXIS_X, Math.atan((H * 0.46 - H / 2) / focal));
   }
   window.addEventListener("pallas:quality", () => { sizeWorld(); for (const w of Object.values(worlds)) w.setQuality?.(saver() ? 0 : qLevel); });
   function judgeQuality(dt) {
