@@ -62,6 +62,11 @@
   body[data-world]::before { opacity: 0; }
   #pallasCanvas.full { position: fixed; inset: 0; width: 100%; height: 100%; z-index: 0; pointer-events: none; }
   body[data-world] .drone::before, body[data-world] .hud { opacity: 0; transition: opacity 1s ease; }
+  /* 電脳空間への出入りのときの光 */
+  #worldFlash { position: fixed; inset: 0; z-index: 0; pointer-events: none; opacity: 0; transition: opacity .5s ease;
+    --flash: 124,196,255;
+    background: radial-gradient(circle at 50% 35%, rgb(255,255,255) 0%, rgba(var(--flash),1) 30%, rgba(var(--flash),.92) 100%); }
+  #worldFlash.on { opacity: 1; }
   body::before {
     content: ""; position: fixed; inset: 0; z-index: 0; pointer-events: none;
     background-image:
@@ -5915,7 +5920,19 @@ if (!Recognition) {
   // パラスが奥へ飛び去る → 景色が切り替わる → 新しい場所で戻ってくる
   let nextWhim = performance.now() / 1000 + 360 + Math.random() * 360;
   let traveling = false;
+  window.__pallasCommitScene = (id) => setScene(id, false);
   function travel(toId) {
+    if (traveling) return;
+    // 3D の世界が出ているときは、世界の中を実際に飛んで移る
+    if (window.__worldTravel && document.body.dataset.world) {
+      traveling = true;
+      window.__worldTravel(toId).then((ok) => { traveling = false; if (!ok) fadeTravel(toId); }).catch(() => { traveling = false; });
+      return;
+    }
+    fadeTravel(toId);
+  }
+  // 暗転して切り替える移り方（3D が使えないときや、動きを減らす設定のとき）
+  function fadeTravel(toId) {
     if (traveling) return;
     traveling = true;
     window.dispatchEvent(new CustomEvent("pallas:travel", { detail: { phase: "depart" } }));
@@ -6278,6 +6295,41 @@ try {
   const BOX_FOV = 30;
   let boxAspect = 1, baseDist = 4.6, full = false, boxKey = "";
   const camState = { dist: 4.6, y: 0.2, look: 0, init: false };
+  // 情報カードが開いてパラスの枠に重なったら、カードより上の空いた所に、少し小さく映す
+  const infoPanel = document.getElementById("infoPanel");
+  const headerEl = document.querySelector("header");
+  const view = { cy: null, k: 1 };
+  function avoidPanel(dt) {
+    const b = box.getBoundingClientRect();
+    if (!b.width || !b.height) return;
+    let cy = b.top + b.height / 2, k = 1;
+    if (infoPanel && !infoPanel.hidden) {
+      const r = infoPanel.getBoundingClientRect();
+      const overlap = r.top < b.bottom - 10 && r.bottom > b.top + 10 && r.left < b.right && r.right > b.left;
+      if (overlap) {
+        const top = (headerEl?.getBoundingClientRect().bottom || 0) + 6;
+        const bottom = r.top > b.top + 40 ? r.top - 6 : b.top + b.height * 0.35;
+        const h = Math.max(60, bottom - top);
+        cy = top + h / 2;
+        k = Math.max(0.32, Math.min(1, h / b.height));
+      }
+    }
+    if (view.cy == null) view.cy = cy;
+    const kk = 1 - Math.exp(-dt * 4);
+    view.cy += (cy - view.cy) * kk;
+    view.k += (k - view.k) * kk;
+    const W = innerWidth, H = innerHeight, offY = H / 2 - view.cy;
+    if (camera.view && Math.abs(camera.view.offsetY - offY) > 0.3) {
+      camera.setViewOffset(W, H, camera.view.offsetX, offY, W, H);
+      camera.updateProjectionMatrix();
+      if (worldRenderer) {
+        worldCam.setViewOffset(W, H, camera.view.offsetX, offY, W, H);
+        worldCam.updateProjectionMatrix();
+        const focal = (H / 2) / Math.tan(THREE.MathUtils.degToRad(camera.fov / 2));
+        pitchQ.setFromAxisAngle(AXIS_X, Math.atan((H * 0.46 - view.cy) / focal));
+      }
+    }
+  }
   function resize() {
     const b = box.getBoundingClientRect();
     const bw = b.width, bh = b.height;
@@ -6525,12 +6577,13 @@ try {
     return (AREA_LABEL[key] || AREA_LABEL.city)[curTod] || "";
   }
   function spotLabel() {
-    const spot = rig.path ? "" : rig.poi?.name || "";
+    const moving = rig.path || rig.flight;
+    const spot = moving ? "" : rig.poi?.name || "";
     const label = placeLabel();
     window.__pallasSpot = spot;
     window.__pallasPlaceLabel = label;
     const el = document.getElementById("place");
-    if (el && worldOn) el.textContent = rig.path ? `${label}（移動中）` : spot ? `${label}（${spot}）` : label;
+    if (el && worldOn) el.textContent = travelDest ? `${travelDest}へ移動中` : moving ? `${label}（移動中）` : spot ? `${label}（${spot}）` : label;
   }
   function applyLight() {
     const key = curArea === "cyber" ? "cyber" : curArea === "space" ? "space" : curScene === "rain" ? "rain" : curTod;
@@ -6559,6 +6612,7 @@ try {
   }
   function syncWorld() {
     const sceneId = String(window.__pallasSceneId || "");
+    if (travelId && travelId === sceneId) return; // 飛んで移っている途中（行き先はもう合わせてある）
     const [id, variant] = sceneId.split(":");
     const want = WORLD_SCENES[id];
     if (!want) {
@@ -6647,10 +6701,136 @@ try {
   }
   window.__pallasWorlds = worlds; // 動作確認用
   window.pallasWorldCruise = () => { if (world && worldOn && !rig.path) startCruise(); }; // 動作確認用
+
+  // ===== 場所から場所へ、実際に飛んで移る（第3段階） =====
+  // 街・雲海・成層圏はひとつの世界なので、上昇して雲を突き抜け、目的地まで飛ぶ。
+  // 電脳空間へは、タワーの上から光の中へ飛び込み、中枢コアの上に降りる（帰りは光の柱を昇って、タワーの上に出る）
+  const flashEl = document.createElement("div");
+  flashEl.id = "worldFlash";
+  document.body.insertBefore(flashEl, document.getElementById("bg").nextSibling);
+  function setFlash(on) {
+    accent.copy(accentBase).lerp(accentThink, cur.purple);
+    flashEl.style.setProperty("--flash", `${Math.round(accent.r * 255)},${Math.round(accent.g * 255)},${Math.round(accent.b * 255)}`);
+    flashEl.classList.toggle("on", on);
+  }
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const easeInOut = (x) => (x < 0.5 ? 4 * x * x * x : 1 - Math.pow(-2 * x + 2, 3) / 2);
+  let travelId = "", travelDest = "";
+  function flyPath(pts, dur, onProgress) {
+    return new Promise((resolve) => {
+      rig.path = null; rig.wideUntil = 0;
+      rig.flight = { curve: new THREE.CatmullRomCurve3(pts, false, "centripetal"), t0: clock.elapsedTime, dur, resolve, onProgress };
+      spotLabel();
+    });
+  }
+  // 2 点を結ぶ飛行経路：飛び立ち → 建物（または雲）より高いところ → 目的地へ降りる
+  function route(a, b) {
+    const flat = Math.hypot(b.x - a.x, b.z - a.z);
+    const dir = new THREE.Vector3(b.x - a.x, 0, b.z - a.z);
+    if (dir.lengthSq() < 1) dir.set(0, 0, -1);
+    dir.normalize();
+    let hMax = 0;
+    if (world.heightAt) for (let k = 0; k <= 48; k++) { _v.lerpVectors(a, b, k / 48); hMax = Math.max(hMax, world.heightAt(_v.x, _v.z)); }
+    const dy = Math.abs(b.y - a.y);
+    const top = Math.max(a.y, b.y, hMax + 45) + Math.min(400, dy * 0.12 + flat * 0.03);
+    const lead = Math.min(220, flat * 0.2 + 30);
+    return [
+      a.clone(),
+      new THREE.Vector3(a.x + dir.x * lead * 0.5, Math.max(a.y + 25, Math.min(top, a.y + 120)), a.z + dir.z * lead * 0.5),
+      new THREE.Vector3((a.x + b.x) / 2, top, (a.z + b.z) / 2),
+      new THREE.Vector3(b.x - dir.x * lead * 0.6, Math.max(b.y + 30, Math.min(top, b.y + 160)), b.z - dir.z * lead * 0.6),
+      b.clone(),
+    ];
+  }
+  const flightDur = (pts) => {
+    const len = new THREE.CatmullRomCurve3(pts, false, "centripetal").getLength();
+    return Math.min(16, Math.max(6, 3 + Math.log10(len + 10) * 2.6));
+  };
+  async function worldTravel(toId) {
+    const [id, variant] = String(toId).split(":");
+    const want = WORLD_SCENES[id];
+    if (!want || !worldOn || !world || reduceMotion || travelId) return false;
+    const w = await ensureWorld(want.kind);
+    const tod = forcedTod || (["dawn", "day", "sunset"].includes(variant) ? variant : null);
+    travelId = toId;
+    travelDest = (AREA_LABEL[id === "rain" ? "rain" : want.area] || AREA_LABEL.city)[sunFor(tod)] || "";
+    sunFor(curArea === "cyber" ? tod : forcedTod || null); // 太陽の向きは今の場所のまま
+    const commit = () => {
+      world = w;
+      curScene = id; curArea = want.area; curTod = sunFor(tod);
+      w.setWeather?.(want.weather);
+      document.body.dataset.world = want.area;
+      window.__pallasCommitScene?.(toId); // 2D 側の場面（BGM・会話に添える景色）も合わせる
+      applyLight(); spotLabel();
+    };
+    const pickTo = () => { const list = w.pois[want.area].filter((p) => p !== rig.poi); return list[Math.floor(Math.random() * list.length)]; };
+    try {
+      if (w === world) {
+        // 同じ世界の中：街 ⇔ 雲海 ⇔ 成層圏（天気だけの変化もここ）
+        const to = pickTo();
+        commit();
+        const pts = route(rig.pos, to.pos);
+        await flyPath(pts, flightDur(pts));
+        arriveAt(to);
+      } else if (want.kind === "cyber") {
+        // 街などから電脳空間へ：タワーの上へ飛び、光の中へ飛び込む
+        const above = new THREE.Vector3(40, 470, 60), dive = new THREE.Vector3(0, 300, 0);
+        const pts = route(rig.pos, above);
+        pts.push(new THREE.Vector3(10, 400, 15), dive);
+        await flyPath(pts, flightDur(pts) + 2, (u) => { if (u > 0.82) setFlash(true); });
+        setFlash(true);
+        await sleep(500);
+        commit();
+        const to = pickTo();
+        rig.pos.set(0, 520, 0);
+        setFlash(false);
+        await flyPath([new THREE.Vector3(0, 520, 0), new THREE.Vector3(8, 330, 10), new THREE.Vector3((to.pos.x) * 0.5, to.pos.y + 60, to.pos.z * 0.5), to.pos.clone()], 8);
+        arriveAt(to);
+      } else {
+        // 電脳空間から外へ：光の柱を昇り、タワーの上に出る
+        const pts = [rig.pos.clone(), new THREE.Vector3(rig.pos.x * 0.4, rig.pos.y + 80, rig.pos.z * 0.4), new THREE.Vector3(6, 260, 6), new THREE.Vector3(0, 420, 0)];
+        await flyPath(pts, 6, (u) => { if (u > 0.75) setFlash(true); });
+        setFlash(true);
+        await sleep(500);
+        commit();
+        const to = pickTo();
+        rig.pos.set(0, 400, 0);
+        setFlash(false);
+        const out = route(new THREE.Vector3(0, 400, 0), to.pos);
+        await flyPath(out, flightDur(out));
+        arriveAt(to);
+      }
+      return true;
+    } finally {
+      travelId = ""; travelDest = "";
+      setFlash(false);
+      spotLabel();
+    }
+  }
+  function arriveAt(to) {
+    rig.flight = null;
+    rig.poi = to; rig.baseYaw = rig.yaw; rig.orbitT = 0; rig.arriveYaw = to.yaw;
+    rig.nextMove = clock.elapsedTime + 70 + Math.random() * 80;
+    rig.nextWide = clock.elapsedTime + 20 + Math.random() * 30;
+    spotLabel();
+  }
+  window.__worldTravel = worldTravel;
   const angLerp = (a, b, k) => { while (b - a > Math.PI) b -= Math.PI * 2; while (b - a < -Math.PI) b += Math.PI * 2; return a + (b - a) * k; };
 
   function updateRig(dt, t, state) {
     if (!world || !worldOn) return;
+    if (rig.flight) {
+      const f = rig.flight;
+      const u = Math.min(1, (t - f.t0) / f.dur), ue = easeInOut(u);
+      f.curve.getPointAt(ue, rig.pos);
+      const tan = f.curve.getTangentAt(Math.min(0.999, ue));
+      if (Math.hypot(tan.x, tan.z) > 0.2) rig.baseYaw = Math.atan2(-tan.x, -tan.z);
+      rig.yaw = angLerp(rig.yaw, rig.baseYaw, 1 - Math.exp(-dt * 1.6));
+      rig.cruise += (1 - rig.cruise) * (1 - Math.exp(-dt * 2));
+      f.onProgress?.(u);
+      if (u >= 1) { rig.flight = null; f.resolve(); }
+      return;
+    }
     const idle = state === "idle" && !(motion.departUntil && t < motion.departUntil);
     if (rig.path) {
       const remain = rig.len - rig.s;
@@ -6688,7 +6868,7 @@ try {
         rig.nextWide = t + 70 + Math.random() * 60;
       }
       if (!idle) rig.wideUntil = 0;
-      if (idle && !reduceMotion && t > rig.nextMove && areaPois().length > 1) startCruise();
+      if (idle && !reduceMotion && !travelId && t > rig.nextMove && areaPois().length > 1) startCruise();
     }
   }
   // カメラの構図（パラスのまわりの空間の中での位置）。状態に合わせてゆっくり寄ったり引いたりする
@@ -6702,6 +6882,7 @@ try {
       } else if (state === "listening") dist = baseDist * 0.93;
       else if (state === "thinking") { dist = baseDist * 1.1; y = 0.45; look = 0.05; }
     }
+    dist /= view.k; // カードをよけて小さく映すとき
     const k = 1 - Math.exp(-dt * (t < rig.wideUntil ? 0.45 : 1.1));
     camState.dist += (dist - camState.dist) * k;
     camState.y += (y - camState.y) * k;
@@ -6756,6 +6937,7 @@ try {
       const b = box.getBoundingClientRect();
       if (`${b.left},${b.top},${b.width},${b.height},${innerWidth},${innerHeight}` !== boxKey) resize();
     }
+    if (full) avoidPanel(dt);
     updateRig(dt, t, state);
     updateCamera(dt, t, state);
     const zNear = nearestZ();
