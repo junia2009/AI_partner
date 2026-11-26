@@ -175,9 +175,9 @@ export function createCity(THREE, opts = {}) {
           float win = wa.x * wa.y;
           float r = hash(id + vec2(vSeed * 13.1, face));
           float on = step(1.0 - vLit, r);
-          // ときどき明かりが点いたり消えたりする
-          float slot = floor(uTime / 23.0 + r * 50.0);
-          on = mix(on, 1.0 - on, step(0.985, hash(id * 0.71 + slot)));
+          // ときどき明かりが点いたり消えたりする（ビルごとに数分おき。窓ごとにバラバラだと街全体がチカチカする）
+          float slot = floor(uTime / 240.0 + vSeed);
+          on = mix(on, 1.0 - on, step(0.992, hash(id * 0.71 + slot)));
           vec3 warm = mix(vec3(1.0, 0.76, 0.46), vec3(0.72, 0.86, 1.0), step(0.72, hash(id * 1.37 + vSeed)));
           float lvl = (0.3 + 0.45 * hash(id * 2.1 + face)) * (hash(id * 3.7 + vSeed) < 0.25 ? 0.35 : 1.0);
           vec3 lit = warm * lvl * on * uNight;
@@ -266,15 +266,45 @@ export function createCity(THREE, opts = {}) {
   }
 
   // ---------- 地面（道路・街灯・郊外の家の明かり） ----------
+  // 湾の水面（地面と同じ板の中で描く。板を重ねると、遠くで前後が乱れてチラつくため）
+  const WATER = `
+    vec3 waterCol(vec3 vW) {
+        vec3 col = vec3(0.02, 0.03, 0.05);
+        float wave = sin(vW.x * 0.08 + uTime * 0.9) * sin(vW.z * 0.11 - uTime * 0.7) + 0.5 * sin(vW.x * 0.31 - vW.z * 0.2 + uTime * 1.7);
+        // 昼：空を映し、日差しがきらめく
+        vec3 wn = normalize(vec3(0.12 * cos(vW.x * 0.08 + uTime * 0.9) + 0.06 * cos(vW.x * 0.31 - vW.z * 0.2 + uTime * 1.7), 1.0, 0.1 * sin(vW.z * 0.11 - uTime * 0.7)));
+        vec3 vdir = normalize(vW - uCam);
+        float fres = 0.08 + 0.92 * pow(1.0 - max(dot(-vdir, wn), 0.0), 5.0);
+        vec3 dayW = mix(vec3(0.03, 0.1, 0.16) * (uZen + 0.3), mix(uHor, uZen, 0.45) * (0.55 + 0.25 * wave), fres * 0.55);
+        dayW += uSunCol * pow(max(dot(reflect(vdir, wn), uSunDir), 0.0), 140.0) * 2.5;
+        col = mix(col, dayW, uDay);
+        // 岸の明かりの映り込み：岸からの距離で弱まる縦の帯
+        float fromShore = vW.z - ${SHORE}.0;
+        float band = pow(hash(vec2(floor(vW.x / 7.0), 0.0)), 6.0);
+        float shimmer = 0.5 + 0.5 * sin(vW.z * 0.9 + wave * 3.0 + uTime * 2.0);
+        col += vec3(1.0, 0.72, 0.45) * band * shimmer * exp(-fromShore / 380.0) * 0.55 * uNight;
+        // 向こう岸の明かり
+        float fromFar = ${FAR_SHORE}.0 - vW.z;
+        col += vec3(0.9, 0.75, 0.6) * band * shimmer * exp(-fromFar / 200.0) * 0.25 * uNight;
+        // 橋の明かりの映り込み
+        float bx = abs(vW.x - 300.0);
+        col += vec3(1.0, 0.85, 0.6) * smoothstep(14.0, 0.0, bx + wave * 3.0) * 0.18 * uNight;
+        // タワーの光の映り込み
+        col += uAccent * smoothstep(30.0, 0.0, abs(vW.x) + wave * 6.0) * exp(-fromShore / 900.0) * 0.12 * uNight;
+        col += vec3(0.03, 0.04, 0.06) * wave * 0.3;
+        return col;
+    }`;
+
   const groundMat = new THREE.ShaderMaterial({
     uniforms,
     vertexShader: `varying vec3 vW; varying float vDist;
       void main() { vec4 w = modelMatrix * vec4(position, 1.0); vW = w.xyz; vec4 mv = viewMatrix * w; vDist = length(mv.xyz); gl_Position = projectionMatrix * mv; }`,
-    fragmentShader: `uniform float uTime; uniform float uNight; uniform float uWet; uniform vec3 uCam;
+    fragmentShader: `uniform float uTime; uniform float uNight; uniform float uWet; uniform vec3 uCam; uniform vec3 uAccent;
       varying vec3 vW; varying float vDist;
       ${HASH}
       ${FOG}
       ${LIGHT}
+      ${WATER}
       void main() {
         vec2 p = vW.xz;
         float r = length(p);
@@ -312,6 +342,7 @@ export function createCity(THREE, opts = {}) {
         // 郊外の幹線道路（遠くへのびる光の線）
         float hw = min(abs(mod(p.x + 400.0, 1200.0) - 600.0), abs(mod(p.y + 400.0, 1500.0) - 750.0));
         col += vec3(1.0, 0.6, 0.3) * smoothstep(5.0, 0.0, hw) * 0.35 * suburb * uNight;
+        if (vW.z > ${SHORE}.0 && vW.z < ${FAR_SHORE}.0 && abs(vW.x) < 7000.0) col = waterCol(vW);
         gl_FragColor = vec4(applyFog(col, vDist), 1.0);
       }`,
   });
@@ -320,46 +351,6 @@ export function createCity(THREE, opts = {}) {
   scene.add(ground);
 
   // ---------- 湾（水面に街の明かりが揺れて映る） ----------
-  const waterMat = new THREE.ShaderMaterial({
-    uniforms,
-    vertexShader: `varying vec3 vW; varying float vDist;
-      void main() { vec4 w = modelMatrix * vec4(position, 1.0); vW = w.xyz; vec4 mv = viewMatrix * w; vDist = length(mv.xyz); gl_Position = projectionMatrix * mv; }`,
-    fragmentShader: `uniform float uTime; uniform float uNight; uniform float uWet; uniform vec3 uCam; uniform vec3 uAccent;
-      varying vec3 vW; varying float vDist;
-      ${HASH}
-      ${FOG}
-      ${LIGHT}
-      void main() {
-        vec3 col = vec3(0.02, 0.03, 0.05);
-        float wave = sin(vW.x * 0.08 + uTime * 0.9) * sin(vW.z * 0.11 - uTime * 0.7) + 0.5 * sin(vW.x * 0.31 - vW.z * 0.2 + uTime * 1.7);
-        // 昼：空を映し、日差しがきらめく
-        vec3 wn = normalize(vec3(0.12 * cos(vW.x * 0.08 + uTime * 0.9) + 0.06 * cos(vW.x * 0.31 - vW.z * 0.2 + uTime * 1.7), 1.0, 0.1 * sin(vW.z * 0.11 - uTime * 0.7)));
-        vec3 vdir = normalize(vW - uCam);
-        float fres = 0.08 + 0.92 * pow(1.0 - max(dot(-vdir, wn), 0.0), 5.0);
-        vec3 dayW = mix(vec3(0.03, 0.1, 0.16) * (uZen + 0.3), mix(uHor, uZen, 0.45) * (0.55 + 0.25 * wave), fres * 0.55);
-        dayW += uSunCol * pow(max(dot(reflect(vdir, wn), uSunDir), 0.0), 140.0) * 2.5;
-        col = mix(col, dayW, uDay);
-        // 岸の明かりの映り込み：岸からの距離で弱まる縦の帯
-        float fromShore = vW.z - ${SHORE}.0;
-        float band = pow(hash(vec2(floor(vW.x / 7.0), 0.0)), 6.0);
-        float shimmer = 0.5 + 0.5 * sin(vW.z * 0.9 + wave * 3.0 + uTime * 2.0);
-        col += vec3(1.0, 0.72, 0.45) * band * shimmer * exp(-fromShore / 380.0) * 0.55 * uNight;
-        // 向こう岸の明かり
-        float fromFar = ${FAR_SHORE}.0 - vW.z;
-        col += vec3(0.9, 0.75, 0.6) * band * shimmer * exp(-fromFar / 200.0) * 0.25 * uNight;
-        // 橋の明かりの映り込み
-        float bx = abs(vW.x - 300.0);
-        col += vec3(1.0, 0.85, 0.6) * smoothstep(14.0, 0.0, bx + wave * 3.0) * 0.18 * uNight;
-        // タワーの光の映り込み
-        col += uAccent * smoothstep(30.0, 0.0, abs(vW.x) + wave * 6.0) * exp(-fromShore / 900.0) * 0.12 * uNight;
-        col += vec3(0.03, 0.04, 0.06) * wave * 0.3;
-        gl_FragColor = vec4(applyFog(col, vDist), 1.0);
-      }`,
-  });
-  const water = new THREE.Mesh(new THREE.PlaneGeometry(14000, FAR_SHORE - SHORE, 1, 1).rotateX(-Math.PI / 2), waterMat);
-  water.position.set(0, 1.2, (SHORE + FAR_SHORE) / 2);
-  scene.add(water);
-
   // ---------- 湾にかかる橋 ----------
   const concreteMat = new THREE.ShaderMaterial({
     uniforms,
@@ -421,6 +412,7 @@ export function createCity(THREE, opts = {}) {
     attribute float aBlink;
     void main() {
       vec4 mv = modelViewMatrix * vec4(position, 1.0);
+      mv.xyz *= 0.996; // 屋上や橋の面と前後を争わないよう、ほんの少し手前に描く
       float blink = aBlink > 0.5 ? step(0.55, fract(uTime * 0.6 + hash1(position.x * 0.13 + position.z))) : 1.0;
       vColor = aColor; vA = blink * (0.12 + 0.88 * uNight) * smoothstep(6.0, 40.0, -mv.z);
       gl_PointSize = clamp(aSize * uPx / -mv.z, 1.5, 16.0);
@@ -468,6 +460,7 @@ export function createCity(THREE, opts = {}) {
       float lead = aMove.w > 0.5 ? 0.0 : -sign(aMove.x) * 4.0;
       vec3 p = aCar.x < 0.5 ? vec3(aCar.y, aMove.z, along + lead) : vec3(along + lead, aMove.z, aCar.y);
       vec4 mv = modelViewMatrix * vec4(p, 1.0);
+      mv.xyz *= 0.996; // 地面と前後を争わないよう、ほんの少し手前に描く
       vColor = aMove.w > 0.5 ? vec3(1.0, 0.95, 0.85) : vec3(1.0, 0.12, 0.08);
       float edge = smoothstep(0.0, 0.03, s) * smoothstep(1.0, 0.97, s);
       vA = edge * (aMove.w > 0.5 ? 0.9 : 0.75) * (0.06 + 0.94 * uNight);
