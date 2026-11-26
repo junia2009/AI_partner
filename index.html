@@ -63,6 +63,14 @@
   #pallasCanvas.full { position: fixed; inset: 0; width: 100%; height: 100%; z-index: 0; pointer-events: none; }
   body[data-world] .drone::before, body[data-world] .hud { opacity: 0; transition: opacity 1s ease; }
   /* 3D の場所ごとの描画面。移るときは、前の景色の上に次の景色を重ねて、なめらかに入れ替える */
+  /* iPhone では、3D の景色の上に「すりガラス（backdrop-filter）」を重ねると、合成のためにメモリを大量に使って落ちることがある。
+     3D の景色が出ている間はすりガラスをやめ、代わりに背景を少し濃くする */
+  body[data-world] *, body[data-world] *::before, body[data-world] *::after { -webkit-backdrop-filter: none !important; backdrop-filter: none !important; }
+  body[data-world] .msg.user { background: rgba(29,42,68,.92); }
+  body[data-world] .msg.assistant { background: rgba(14,19,30,.88); }
+  body[data-world] .info-panel { background: rgba(12,17,28,.97); }
+  /* 設定などを開いている間は、景色とパラスを隠して描くのも止める（メモリと電池の節約） */
+  body:has(dialog[open]) #world, body:has(dialog[open]) #pallasCanvas, body:has(dialog[open]) #bg, body:has(dialog[open]) .world-snap { visibility: hidden; }
   .world-snap { position: fixed; inset: 0; width: 100%; height: 100%; z-index: 0; pointer-events: none; display: block; opacity: 0; transform-origin: 50% 35%; }
   body::before {
     content: ""; position: fixed; inset: 0; z-index: 0; pointer-events: none;
@@ -6000,6 +6008,7 @@ if (!Recognition) {
     const dt = Math.min((now - prev) / 16.67, 3); prev = now;
     const t = now / 1000;
     // 3D の世界が表示されているあいだは、隠れている 2D の景色を描かない（電池の節約）
+    if (document.querySelector("dialog[open]")) { requestAnimationFrame(frame); return; } // 設定などを開いている間は描かない
     if (document.body.dataset.world && !previous && now - (window.__worldShownAt || now) > 1600) { requestAnimationFrame(frame); return; }
     if (current.lazy) {
       // 3D の準備中（起動から 6 秒まで）は待つ。それを過ぎても 3D が出ていなければ、2D を作って描く
@@ -7092,6 +7101,8 @@ try {
   }
 
   function frame() {
+    // 設定などを開いている間は描かない（時計は進めておく）
+    if (document.querySelector("dialog[open]")) { clock.getDelta(); requestAnimationFrame(frame); return; }
     const dt = Math.min(clock.getDelta(), 0.05);
     const t = clock.elapsedTime;
     const state = document.body.dataset.state || "idle";
