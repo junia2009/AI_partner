@@ -11,11 +11,21 @@ const HOME = { lat: 35.7, lon: 139.7 }; // 街のある場所（地球のてっ�
 export function createOrbit(THREE, opts = {}) {
   const scene = new THREE.Scene();
   const loader = new THREE.TextureLoader();
-  const tex = (name) => {
-    const t = loader.load(TEX + name);
+  // 画像は読み込んだあと 1024×512 に縮めてから使う（元の 2048 のままだと iPhone のメモリを食いすぎる）
+  const tex = (name, size = 1024) => {
+    const t = new THREE.Texture();
     t.anisotropy = opts.anisotropy || 1;
     t.minFilter = THREE.LinearMipmapLinearFilter;
     t.magFilter = THREE.LinearFilter;
+    loader.load(TEX + name, (src) => {
+      const img = src.image;
+      const c = document.createElement("canvas");
+      c.width = size; c.height = size / 2;
+      c.getContext("2d").drawImage(img, 0, 0, c.width, c.height);
+      t.image = c;
+      t.needsUpdate = true;
+      src.dispose();
+    });
     return t;
   };
   const uniforms = {
@@ -26,7 +36,6 @@ export function createOrbit(THREE, opts = {}) {
     uDay: { value: tex("earth_atmos_2048.jpg") },
     uNight: { value: tex("earth_lights_2048.png") },
     uClouds: { value: tex("earth_clouds_1024.png") },
-    uSpec: { value: tex("earth_specular_2048.jpg") },
   };
 
   // ---------- 地球の向き：街の場所をてっぺん（+y）、北を -z に ----------
@@ -44,7 +53,7 @@ export function createOrbit(THREE, opts = {}) {
     uniforms,
     vertexShader: `varying vec2 vUv; varying vec3 vN; varying vec3 vW;
       void main() { vUv = uv; vN = normalize(mat3(modelMatrix) * normal); vec4 w = modelMatrix * vec4(position, 1.0); vW = w.xyz; gl_Position = projectionMatrix * viewMatrix * w; }`,
-    fragmentShader: `uniform sampler2D uDay; uniform sampler2D uNight; uniform sampler2D uClouds; uniform sampler2D uSpec;
+    fragmentShader: `uniform sampler2D uDay; uniform sampler2D uNight; uniform sampler2D uClouds;
       uniform vec3 uSunDir; uniform vec3 uCam; uniform vec3 uAccent; uniform float uTime;
       varying vec2 vUv; varying vec3 vN; varying vec3 vW;
       void main() {
@@ -52,10 +61,11 @@ export function createOrbit(THREE, opts = {}) {
         float ndl = dot(n, uSunDir);
         float day = smoothstep(-0.1, 0.18, ndl);
         vec3 v = normalize(uCam - vW);
-        vec3 col = texture2D(uDay, vUv).rgb * (0.04 + 1.05 * max(ndl, 0.0));
+        vec3 dayTex = texture2D(uDay, vUv).rgb;
+        vec3 col = dayTex * (0.04 + 1.05 * max(ndl, 0.0));
         float cl = texture2D(uClouds, vUv + vec2(uTime * 0.0000035, 0.0)).a; // 雲の濃さは透明度に入っている
         // 海は日差しを映す
-        float sea = texture2D(uSpec, vUv).r;
+        float sea = smoothstep(0.02, 0.12, dayTex.b - max(dayTex.r, dayTex.g)); // 青が強い所を海とみなす
         col += vec3(1.0, 0.95, 0.85) * pow(max(dot(n, normalize(uSunDir + v)), 0.0), 70.0) * sea * 0.7 * day * (1.0 - cl);
         col = mix(col, vec3(0.95, 0.97, 1.0) * (0.03 + 1.0 * max(ndl, 0.0)), cl * 0.9);
         // 夜の側：街の明かり

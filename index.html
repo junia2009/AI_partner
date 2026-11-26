@@ -6062,7 +6062,7 @@ try {
   const reduceMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
 
   // --- レンダラーとシーン ---
-  const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
+  let renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
   renderer.outputColorSpace = THREE.SRGBColorSpace;
   // 発光色の色味が白飛びしにくいトーンマッピング
@@ -6070,8 +6070,14 @@ try {
   renderer.toneMappingExposure = 1.0;
 
   const scene = new THREE.Scene();
-  const pmrem = new THREE.PMREMGenerator(renderer);
-  scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+  const roomEnv = new RoomEnvironment();
+  function makeEnv(r) {
+    const g = new THREE.PMREMGenerator(r);
+    const tex = g.fromScene(roomEnv, 0.04).texture;
+    g.dispose();
+    return tex;
+  }
+  scene.environment = makeEnv(renderer);
 
   const camera = new THREE.PerspectiveCamera(30, 1, 0.1, 50);
   camera.position.set(0, 0.2, 4.6);
@@ -6090,6 +6096,7 @@ try {
   const b64 = document.getElementById("pallas-glb").textContent.trim();
   const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
   const gltf = await new GLTFLoader().parseAsync(bytes.buffer, "");
+  document.getElementById("pallas-glb")?.remove(); // 読み終えた元データは捨てる（メモリ節約）
   scene.add(gltf.scene);
 
   const root = gltf.scene.getObjectByName("PALLAS");
@@ -6129,7 +6136,7 @@ try {
     };
   }
   function makeWear(o) {
-    const W = o.w || 1024, H = o.h || 512, R = rng(o.seed);
+    const W = o.w || 512, H = o.h || 256, R = rng(o.seed); // 画面上は小さいので、模様は控えめな大きさで
     const mk = () => { const c = document.createElement("canvas"); c.width = W; c.height = H; return [c, c.getContext("2d")]; };
     const [colC, col] = mk(), [rouC, rou] = mk(), [bumC, bum] = mk();
     col.fillStyle = o.paint; col.fillRect(0, 0, W, H);
@@ -6372,12 +6379,12 @@ try {
     baseDist = Math.max(4.4, 1.55 / (Math.tan(halfFov) * boxAspect));
     if (full) {
       const W = innerWidth, H = innerHeight;
-      setRendererSize(renderer, Math.min(window.devicePixelRatio, 1.5), W, H); // 画面いっぱいなのでメモリを食いすぎないよう控えめに
+      if (!merged) setRendererSize(renderer, Math.min(window.devicePixelRatio, 1.5), W, H); // 画面いっぱいなのでメモリを食いすぎないよう控えめに
       camera.fov = THREE.MathUtils.radToDeg(2 * Math.atan(Math.tan(halfFov) * H / bh));
       camera.aspect = W / H;
       camera.setViewOffset(W, H, W / 2 - (b.left + bw / 2), H / 2 - (b.top + bh / 2), W, H);
     } else {
-      setRendererSize(renderer, Math.min(window.devicePixelRatio, 2), bw, bh);
+      if (!merged) setRendererSize(renderer, Math.min(window.devicePixelRatio, 2), bw, bh);
       camera.fov = BOX_FOV;
       camera.aspect = boxAspect;
       camera.clearViewOffset();
@@ -6517,13 +6524,29 @@ try {
   const worldCanvasEl = document.getElementById("world");
   let wr = null; // 景色用の WebGL（1 つだけ）
   let worldCanvas = worldCanvasEl;
+  // 景色とパラスを同じ 1 つの WebGL で描く（iPhone は WebGL を 2 つ持つとメモリが足りなくなり、落ちたり 2D に戻ったりする）
+  let merged = false;
   function worldRendererGet() {
     if (!wr) {
       wr = new THREE.WebGLRenderer({ canvas: worldCanvas, antialias: false, powerPreference: "high-performance" });
-      wr.outputColorSpace = THREE.LinearSRGBColorSpace;
+      // パラス本体の色の出し方に合わせる（景色の素材は自前の色計算なので影響を受けない）
+      wr.outputColorSpace = THREE.SRGBColorSpace;
+      wr.toneMapping = THREE.NeutralToneMapping;
+      wr.toneMappingExposure = 1.0;
       watchContext(worldCanvas);
+      mergeInto(wr);
     }
     return wr;
+  }
+  function mergeInto(r) {
+    const old = renderer;
+    scene.environment?.dispose?.();
+    scene.environment = makeEnv(r);
+    renderer = r;
+    merged = true;
+    canvas.style.display = "none";
+    setFull(true); // 景色の面は画面いっぱいなので、パラスの見え方も画面いっぱいの設定に
+    if (old !== r) { try { old.dispose(); old.forceContextLoss(); } catch {} }
   }
   // iPhone はメモリが足りないときやアプリを裏に回したとき、3D の描画を取り上げることがある。
   // 2 秒たっても戻らなければ、描画面を作り直す（景色のデータは新しい描画面に自動で送り直される）
@@ -6625,12 +6648,12 @@ try {
   const accent = new THREE.Color(), accentBase = new THREE.Color(0x7cc4ff), accentThink = new THREE.Color(0xb48cff);
 
   // 画質：なめらかさ（コマの間隔）を見て、街を描く細かさ（解像度）を上げ下げする
-  const Q_LEVELS = [0.45, 0.6, 0.75, 0.9, 1.0];
+  const Q_LEVELS = [0.4, 0.5, 0.6, 0.75, 0.9];
   let qLevel = 2, qSum = 0, qN = 0, qGood = 0, qHold = 5, qDowns = 0, frameNo = 0;
   const saver = () => typeof settings !== "undefined" && settings.bgQuality === "saver";
   function worldPR() {
     const lv = saver() ? 0 : qLevel;
-    return Math.max(0.5, Math.min(window.devicePixelRatio || 1, 2) * Q_LEVELS[lv]);
+    return Math.max(0.6, Math.min(1.5, (window.devicePixelRatio || 1) * Q_LEVELS[lv]));
   }
   function sizeWorld() {
     if (!wr) return;
@@ -7041,15 +7064,31 @@ try {
     wr.render(w.scene, worldCam);
     if (snapWanted) { const done = snapWanted; snapWanted = null; try { grabSnapshot(); } catch {} done(); }
   }
+  // 景色を描いたら true（省電力で描かないコマは前の絵を残すので true とみなす）
+  function renderWorldGate(dt, t) {
+    if (!world || !wr) return false;
+    if (!worldOn && t > worldFadeUntil) return false;
+    renderWorld(dt, t);
+    return true;
+  }
   function renderWorld(dt, t) {
     if (!world || !wr) return;
     if (!worldOn && t > worldFadeUntil) return;
     judgeQuality(dt);
     frameNo++;
-    if (saver() && frameNo % 2) return; // 省電力では景色を 30 コマで描く
+    if (saver() && frameNo % 2) { if (merged) { /* 景色を描かないコマは前の絵のまま */ } return; } // 省電力では 30 コマで描く
     camera.updateMatrixWorld();
     accent.copy(accentBase).lerp(accentThink, cur.purple);
     drawWorld(world, rig.pos, rig.yaw, dt, t);
+    drawPallasOver();
+  }
+  // 景色の上にパラスを重ねて描く（奥行きは別なので、深さだけ消してから）
+  function drawPallasOver() {
+    if (!merged) return;
+    wr.autoClear = false;
+    wr.clearDepth();
+    wr.render(scene, camera);
+    wr.autoClear = true;
   }
 
   function frame() {
@@ -7213,8 +7252,11 @@ try {
     const thrust = 1 + Math.sin(t * 9) * 0.12 + talk * 0.25;
     thrusterGlow.scale.set(base.thrusterScale.x, base.thrusterScale.y * thrust, base.thrusterScale.z);
 
-    try { renderWorld(dt, t); } catch (err) { worldError(err); }
-    renderer.render(scene, camera);
+    let drewWorld = false;
+    try { drewWorld = renderWorldGate(dt, t); } catch (err) { worldError(err); }
+    // 景色と一緒に描いていないときだけ、パラスを単独で描く
+    if (!merged) renderer.render(scene, camera);
+    else if (!drewWorld) { wr.setClearColor(0x000000, 1); wr.clear(); wr.render(scene, camera); }
     requestAnimationFrame(frame);
   }
 
