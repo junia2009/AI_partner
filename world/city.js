@@ -521,7 +521,7 @@ export function createCity(THREE, opts = {}) {
         // 高空：空が黒くなり、地平線に青い大気の帯が残る
         float limb = exp(-abs(y) * 22.0);
         vec3 space = vec3(0.004, 0.007, 0.018) + vec3(0.08, 0.2, 0.55) * limb * 0.6 + uHor * limb * 0.5;
-        col = mix(col, space, uAlt * smoothstep(-0.03, 0.12, y));
+        col = mix(col, space, uAlt); // 地平線より下も（白い帯が残らないように）
         // 星（夜か、高い空で見える。雨の日は見えない）
         float starVis = max(1.0 - uDay, uAlt * 0.85) * (1.0 - uWet);
         vec3 sp = d * 300.0;
@@ -714,6 +714,8 @@ export function createCity(THREE, opts = {}) {
     uniforms.uCam.value.setFromMatrixPosition(camera.matrixWorld);
     const camY = uniforms.uCam.value.y;
     uniforms.uAlt.value = sm(2500, 13000, camY);
+    // 高く昇るほど、霧（遠くの色）も宇宙の暗い色へ。白くかすんだまま宇宙へ出ないように
+    uniforms.uFogColor.value.lerp(_c.setRGB(0.012, 0.025, 0.06), sm(3000, 22000, camY) * 0.9);
     uniforms.uFogDensity.value = 1 / ((3800 - 2300 * wet) * (1 + Math.max(0, camY - 300) / 650));
     sky.position.copy(uniforms.uCam.value);
     // 雲：雨の日は空一面。カメラが雲より上なら下の板から、下なら上の板から描く

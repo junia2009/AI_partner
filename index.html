@@ -57,16 +57,13 @@
   /* AIらしい背景：粒子ネットワーク（canvas）＋グリッド＋走査線 */
   #bg { position: fixed; inset: 0; width: 100%; height: 100%; z-index: 0; pointer-events: none; transition: opacity 1.4s ease; }
   /* 3D の世界（街など）。表示中は 2D の背景を消して、パラスを画面いっぱいの層で描く */
-  #world { position: fixed; inset: 0; width: 100%; height: 100%; z-index: 0; pointer-events: none; display: block; transition: opacity .7s ease; }
+  #world { display: none; }
   body[data-world] #bg { opacity: 0; }
   body[data-world]::before { opacity: 0; }
   #pallasCanvas.full { position: fixed; inset: 0; width: 100%; height: 100%; z-index: 0; pointer-events: none; }
   body[data-world] .drone::before, body[data-world] .hud { opacity: 0; transition: opacity 1s ease; }
-  /* 電脳空間への出入りのときの光 */
-  #worldFlash { position: fixed; inset: 0; z-index: 0; pointer-events: none; opacity: 0; transition: opacity .5s ease;
-    --flash: 124,196,255;
-    background: radial-gradient(circle at 50% 35%, rgb(255,255,255) 0%, rgba(var(--flash),1) 30%, rgba(var(--flash),.92) 100%); }
-  #worldFlash.on { opacity: 1; }
+  /* 3D の場所ごとの描画面。移るときは、前の景色の上に次の景色を重ねて、なめらかに入れ替える */
+  .world-layer { position: fixed; inset: 0; width: 100%; height: 100%; z-index: 0; pointer-events: none; display: block; opacity: 0; }
   body::before {
     content: ""; position: fixed; inset: 0; z-index: 0; pointer-events: none;
     background-image:
@@ -898,7 +895,7 @@ const PALLAS_SYSTEM_PROMPT = `あなたは「パラス」。マスター専属�
 - 流したら「〇〇を流します」と短く一言だけ。曲の説明は聞かれたときだけします。
 
 # 景色（画面の背景）
-- 画面の背景には、電脳空間・街の上空（朝焼け・昼・夕暮れ・夜）・成層圏の星空・雲の上（朝焼け・青空・夕焼け）・雨の街のどれかの景色が映っています。今の景色は発言の先頭の [景色] でわかります。
+- 画面の背景には、電脳空間・街の上空（朝焼け・昼・夕暮れ・夜）・宇宙（地球の上）・雲の上（朝焼け・青空・夕焼け）・雨の街のどれかの景色が映っています。今の景色は発言の先頭の [景色] でわかります。
 - これはあなたの姿を見せるための演出です。マスターが実際にいる場所ではありません。景色を理由に「ここは電脳空間なので近くがわからない」などと言ってはいけません。
 - 「宇宙に行こう」「雨の景色がいい」「景色を変えて」などと頼まれたら travel_to で景色を変えます。「夜の街」「夕暮れの街」のように時間帯を言われたら、time も指定します（夜の街 → place: city, time: night）。移動は返事のあとに行うので、「行きましょう」くらいの短い一言を添えます。
 - 「近くの〇〇」「この辺の〇〇」と聞かれたら、景色に関係なく maps_search を near_me: true で使います。マスターの実際の現在地は、端末の位置情報から自動で取得されます。
@@ -1144,7 +1141,7 @@ const TOOLS = [
         place: {
           type: "string",
           enum: ["cyber", "city", "space", "sky:dawn", "sky:day", "sky:sunset", "rain"],
-          description: "cyber=電脳空間、city=街の上空、space=成層圏の星空・宇宙、sky:dawn=雲の上の朝焼け、sky:day=雲の上の青空、sky:sunset=雲の上の夕焼け、rain=雨の街",
+          description: "cyber=電脳空間、city=街の上空、space=宇宙（地球が見える高さ）、sky:dawn=雲の上の朝焼け、sky:day=雲の上の青空、sky:sunset=雲の上の夕焼け、rain=雨の街",
         },
         time: {
           type: "string",
@@ -3428,7 +3425,7 @@ function stripMeta(t) {
 // 場所の移動は、返事を話し終えてから行う
 let pendingTravel = null;
 const PLACE_NAMES = {
-  cyber: "電脳空間", city: "街の上空", space: "成層圏の星空", "sky:dawn": "雲の上（朝焼け）",
+  cyber: "電脳空間", city: "街の上空", space: "宇宙（地球の上）", "sky:dawn": "雲の上（朝焼け）",
   "sky:day": "雲の上（青空）", "sky:sunset": "雲の上（夕焼け）", rain: "雨の夜",
 };
 
@@ -6340,7 +6337,7 @@ try {
     if (camera.view && Math.abs(camera.view.offsetY - offY) > 0.3) {
       camera.setViewOffset(W, H, camera.view.offsetX, offY, W, H);
       camera.updateProjectionMatrix();
-      if (worldRenderer) {
+      if (Object.keys(views).length) {
         worldCam.setViewOffset(W, H, camera.view.offsetX, offY, W, H);
         worldCam.updateProjectionMatrix();
         const focal = (H / 2) / Math.tan(THREE.MathUtils.degToRad(camera.fov / 2));
@@ -6475,14 +6472,14 @@ try {
     city: { kind: "city", area: "city", weather: "clear" },
     rain: { kind: "city", area: "city", weather: "rain" },
     sky: { kind: "city", area: "clouds", weather: "clear" },
-    space: { kind: "city", area: "space", weather: "clear" },
+    space: { kind: "orbit", area: "space" },
     cyber: { kind: "cyber", area: "cyber" },
   };
   const AREA_LABEL = {
     city: { night: "夜の街の上空", dawn: "朝焼けの街の上空", day: "昼の街の上空", sunset: "夕暮れの街の上空" },
     rain: { night: "雨の夜", dawn: "雨の朝", day: "雨の街", sunset: "雨の夕暮れ" },
     clouds: { night: "夜の雲海の上", dawn: "雲の上（朝焼け）", day: "雲の上（青空）", sunset: "雲の上（夕焼け）" },
-    space: { night: "成層圏の星空", dawn: "成層圏の夜明け", day: "成層圏", sunset: "成層圏の夕暮れ" },
+    space: { night: "宇宙（地球の上）", dawn: "宇宙（地球の上）", day: "宇宙（地球の上）", sunset: "宇宙（地球の上）" },
     cyber: { night: "電脳空間", dawn: "電脳空間", day: "電脳空間", sunset: "電脳空間" },
   };
   // パラス本体の照らし方（時間帯・場所ごと）
@@ -6495,9 +6492,32 @@ try {
     space: { fog: 0x05070f, key: 0xe8eeff, keyI: 1.15, rim: 0x9a8cff, sky: 0xb8c4ff, ground: 0x05060f },
     cyber: { fog: 0x0b1220, key: 0xffffff, keyI: 1.3, rim: 0x7cc4ff, sky: 0xbfd9ff, ground: 0x0b0f17 },
   };
-  const worldCanvas = document.getElementById("world");
-  const worlds = {}, worldLoads = {};
-  let world = null, worldRenderer = null, worldOn = false, worldFadeUntil = 0;
+  const bgEl = document.getElementById("bg");
+  const worlds = {}, worldLoads = {}, views = {};
+  let world = null, worldOn = false, worldFadeUntil = 0, coast = null;
+  // 場所の種類（街・電脳空間・宇宙）ごとに描画面を 1 枚ずつ持つ。移るときは 2 枚を重ねて入れ替える
+  function makeView(kind) {
+    const c = document.createElement("canvas");
+    c.className = "world-layer";
+    c.setAttribute("aria-hidden", "true");
+    document.body.insertBefore(c, bgEl);
+    const r = new THREE.WebGLRenderer({ canvas: c, antialias: false, powerPreference: "high-performance" });
+    r.outputColorSpace = THREE.LinearSRGBColorSpace;
+    return (views[kind] = { canvas: c, renderer: r, kind });
+  }
+  function showView(kind, fade) {
+    const v = views[kind];
+    if (!v) return;
+    document.body.insertBefore(v.canvas, bgEl); // いちばん上へ
+    v.canvas.style.transition = "none";
+    if (fade) { v.canvas.style.opacity = "0"; void v.canvas.offsetWidth; v.canvas.style.transition = "opacity 1.6s ease"; }
+    v.canvas.style.opacity = "1";
+    for (const o of Object.values(views)) {
+      if (o === v) continue;
+      if (fade) setTimeout(() => { if (world?.kind !== o.kind) { o.canvas.style.transition = "none"; o.canvas.style.opacity = "0"; } }, 1750);
+      else { o.canvas.style.transition = "none"; o.canvas.style.opacity = "0"; }
+    }
+  }
   let curScene = null, curArea = "", curTod = "night", areaSwitching = false;
   const qs = new URLSearchParams(location.search);
   const forcedTod = ["night", "dawn", "day", "sunset"].includes(qs.get("tod")) ? qs.get("tod") : null; // 動作確認用： ?tod=day
@@ -6530,6 +6550,7 @@ try {
     pos: new THREE.Vector3(), yaw: 0, baseYaw: 0, arriveYaw: null, scale: 0.5, orbitT: 0,
     poi: null, path: null, len: 0, s: 0, speed: 0, target: null,
     nextMove: 0, wideUntil: 0, nextWide: 0, cruise: 0,
+    vel: new THREE.Vector3(), prev: new THREE.Vector3(),
   };
   const rigQ = new THREE.Quaternion(), _v = new THREE.Vector3(), _q = new THREE.Quaternion();
   // パラスの枠は画面の上の方にあるので、そのままだと地平線が上に寄って地面ばかり映る。
@@ -6547,8 +6568,8 @@ try {
     return Math.max(0.5, Math.min(window.devicePixelRatio || 1, 2) * Q_LEVELS[lv]);
   }
   function sizeWorld() {
-    if (!worldRenderer) return;
-    setRendererSize(worldRenderer, worldPR(), innerWidth, innerHeight);
+    if (!Object.keys(views).length) return;
+    for (const v of Object.values(views)) setRendererSize(v.renderer, worldPR(), innerWidth, innerHeight);
     worldCam.fov = camera.fov; worldCam.aspect = camera.aspect;
     if (camera.view && camera.view.enabled) {
       const v = camera.view;
@@ -6575,14 +6596,15 @@ try {
 
   function ensureWorld(kind) {
     worldLoads[kind] ||= import(`./world/${kind}.js`).then((mod) => {
-      if (!worldRenderer) {
-        worldRenderer = new THREE.WebGLRenderer({ canvas: worldCanvas, antialias: false, powerPreference: "high-performance" });
-        worldRenderer.outputColorSpace = THREE.LinearSRGBColorSpace;
-      }
-      const w = kind === "cyber" ? mod.createCyber(THREE) : mod.createCity(THREE, { anisotropy: Math.min(8, worldRenderer.capabilities.getMaxAnisotropy()) });
+      const v = views[kind] || makeView(kind);
+      const aniso = Math.min(8, v.renderer.capabilities.getMaxAnisotropy());
+      const w = kind === "cyber" ? mod.createCyber(THREE) : kind === "orbit" ? mod.createOrbit(THREE, { anisotropy: aniso }) : mod.createCity(THREE, { anisotropy: aniso });
+      w.kind = kind; w.view = v;
       w.setQuality?.(saver() ? 0 : qLevel);
       worlds[kind] = w;
       sizeWorld();
+      // 初めて使うときに止まらないよう、描き方（シェーダー）を先に用意しておく
+      try { v.renderer.compile(w.scene, worldCam); } catch {}
       return w;
     });
     return worldLoads[kind];
@@ -6658,18 +6680,18 @@ try {
         worldOn = true;
         window.__worldShownAt = performance.now();
         setFull(true);
+        showView(w.kind, false);
         document.body.dataset.world = want.area;
         spotLabel();
+        // ほかの場所も、あとで止まらないよう先に読み込んでおく
+        setTimeout(() => { ensureWorld("cyber"); ensureWorld("city"); }, 8000);
+        setTimeout(() => ensureWorld("orbit"), 20000);
       } else if (curArea !== want.area || world !== w) {
-        // 世界の中で別の場所へ：いったん暗くしてから移る（第3段階で、実際に飛んで移る演出にする）
-        areaSwitching = true;
-        worldCanvas.style.opacity = "0";
-        setTimeout(() => {
-          enter();
-          document.body.dataset.world = want.area;
-          worldCanvas.style.opacity = "1";
-          areaSwitching = false;
-        }, 700);
+        // 飛ばずに移るとき（動きを減らす設定など）：重ねて入れ替える
+        const kindChanged = world !== w;
+        enter();
+        if (kindChanged) showView(w.kind, true);
+        document.body.dataset.world = want.area;
       } else {
         // 同じ場所の中で天気だけ変わる（街 ⇔ 雨）
         curScene = id;
@@ -6721,21 +6743,15 @@ try {
   // ===== 場所から場所へ、実際に飛んで移る（第3段階） =====
   // 街・雲海・成層圏はひとつの世界なので、上昇して雲を突き抜け、目的地まで飛ぶ。
   // 電脳空間へは、タワーの上から光の中へ飛び込み、中枢コアの上に降りる（帰りは光の柱を昇って、タワーの上に出る）
-  const flashEl = document.createElement("div");
-  flashEl.id = "worldFlash";
-  document.body.insertBefore(flashEl, document.getElementById("bg").nextSibling);
-  function setFlash(on) {
-    accent.copy(accentBase).lerp(accentThink, cur.purple);
-    flashEl.style.setProperty("--flash", `${Math.round(accent.r * 255)},${Math.round(accent.g * 255)},${Math.round(accent.b * 255)}`);
-    flashEl.classList.toggle("on", on);
-  }
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const easeInOut = (x) => (x < 0.5 ? 4 * x * x * x : 1 - Math.pow(-2 * x + 2, 3) / 2);
   let travelId = "", travelDest = "", queuedTravel = "";
-  function flyPath(pts, dur, onProgress) {
+  const easeIn = (x) => x * x * x;
+  const easeOut = (x) => 1 - Math.pow(1 - x, 3);
+  function flyPath(pts, dur, onProgress, ease = easeInOut) {
     return new Promise((resolve) => {
       rig.path = null; rig.wideUntil = 0;
-      rig.flight = { curve: new THREE.CatmullRomCurve3(pts, false, "centripetal"), t0: clock.elapsedTime, dur, resolve, onProgress };
+      rig.flight = { curve: new THREE.CatmullRomCurve3(pts, false, "centripetal"), t0: clock.elapsedTime, dur, resolve, onProgress, ease };
       spotLabel();
     });
   }
@@ -6762,6 +6778,40 @@ try {
     const len = new THREE.CatmullRomCurve3(pts, false, "centripetal").getLength();
     return Math.min(16, Math.max(6, 3 + Math.log10(len + 10) * 2.6));
   };
+  const V3 = (x, y, z) => new THREE.Vector3(x, y, z);
+  // 種類の違う場所へ（街 ⇔ 電脳空間 ⇔ 宇宙）：前の景色の中を飛び続けながら、次の景色の中を飛んでいる絵を重ね、なめらかに入れ替える
+  async function portal(toW, dest, onSwitch) {
+    const fromK = world.kind, toK = toW.kind, p = rig.pos.clone();
+    let A, B0;
+    if (toK === "cyber") {
+      // タワーの上へ飛び、光の中へ飛び込む → 電脳空間の中枢の上から降りる
+      A = [...route(p, V3(40, 470, 60)), V3(10, 390, 15), V3(0, 300, 0)];
+      B0 = [V3(0, 760, 0), V3(4, 520, 6)];
+    } else if (fromK === "cyber") {
+      // 光の柱を昇る → タワーのてっぺんから飛び出す
+      A = [p, V3(p.x * 0.4, p.y + 80, p.z * 0.4), V3(6, 320, 6), V3(0, 720, 0)];
+      B0 = [V3(0, 395, 0), V3(0, 470, 0)];
+    } else if (toK === "orbit") {
+      // 真上へ昇り続けて、大気を抜けて宇宙へ
+      const x = p.x * 0.5, z = p.z * 0.5;
+      A = [p, V3(p.x, p.y + 260, p.z), V3(p.x * 0.8, 7000, p.z * 0.8), V3(x, 28000, z)];
+      B0 = [V3(x, 28000, z), V3(x * 0.7, 110000, z * 0.7)];
+    } else {
+      // 宇宙から降りる：大気に入って、目的地の上へ
+      const x = dest.x * 0.5, z = dest.z * 0.5;
+      A = [p, V3((p.x + x) / 2, Math.max(60000, p.y * 0.4), (p.z + z) / 2), V3(x, 28000, z)];
+      B0 = [V3(x, 28000, z), V3(dest.x * 0.8, Math.max(dest.y + 2500, 7000), dest.z * 0.8)];
+    }
+    await flyPath(A, flightDur(A), null, easeIn);
+    coast = { w: world, pos: rig.pos.clone(), vel: rig.vel.clone(), yaw: rig.yaw, until: clock.elapsedTime + 1.8 };
+    world = toW;
+    onSwitch?.();
+    showView(toK, true);
+    rig.pos.copy(B0[0]);
+    const tail = route(B0[B0.length - 1], dest).slice(1);
+    const B = [...B0, ...tail];
+    await flyPath(B, flightDur(B), null, easeOut);
+  }
   async function worldTravel(toId) {
     const [id, variant] = String(toId).split(":");
     const want = WORLD_SCENES[id];
@@ -6771,7 +6821,7 @@ try {
     const tod = (["night", "dawn", "day", "sunset"].includes(variant) ? variant : null) || forcedTod;
     travelId = toId;
     travelDest = (AREA_LABEL[id === "rain" ? "rain" : want.area] || AREA_LABEL.city)[sunFor(tod)] || "";
-    sunFor(curArea === "cyber" ? tod : forcedTod || null); // 太陽の向きは今の場所のまま
+    sunFor(world.kind === "cyber" ? tod : forcedTod || null); // 太陽の向きは今の場所のまま
     const commit = () => {
       world = w;
       curScene = id; curArea = want.area; curTod = sunFor(tod);
@@ -6780,47 +6830,29 @@ try {
       window.__pallasCommitScene?.(toId); // 2D 側の場面（BGM・会話に添える景色）も合わせる
       applyLight(); spotLabel();
     };
-    const pickTo = () => { const list = w.pois[want.area].filter((p) => p !== rig.poi); return list[Math.floor(Math.random() * list.length)]; };
+    const list = w.pois[want.area].filter((p) => p !== rig.poi);
+    const to = list[Math.floor(Math.random() * list.length)];
     try {
       if (w === world) {
-        // 同じ世界の中：街 ⇔ 雲海 ⇔ 成層圏（天気だけの変化もここ）
-        const to = pickTo();
+        // 同じ世界の中：街 ⇔ 雲海（天気だけの変化もここ）
         commit();
         const pts = route(rig.pos, to.pos);
         await flyPath(pts, flightDur(pts));
-        arriveAt(to);
-      } else if (want.kind === "cyber") {
-        // 街などから電脳空間へ：タワーの上へ飛び、光の中へ飛び込む
-        const above = new THREE.Vector3(40, 470, 60), dive = new THREE.Vector3(0, 300, 0);
-        const pts = route(rig.pos, above);
-        pts.push(new THREE.Vector3(10, 400, 15), dive);
-        await flyPath(pts, flightDur(pts) + 2, (u) => { if (u > 0.82) setFlash(true); });
-        setFlash(true);
-        await sleep(500);
-        commit();
-        const to = pickTo();
-        rig.pos.set(0, 520, 0);
-        setFlash(false);
-        await flyPath([new THREE.Vector3(0, 520, 0), new THREE.Vector3(8, 330, 10), new THREE.Vector3((to.pos.x) * 0.5, to.pos.y + 60, to.pos.z * 0.5), to.pos.clone()], 8);
-        arriveAt(to);
       } else {
-        // 電脳空間から外へ：光の柱を昇り、タワーの上に出る
-        const pts = [rig.pos.clone(), new THREE.Vector3(rig.pos.x * 0.4, rig.pos.y + 80, rig.pos.z * 0.4), new THREE.Vector3(6, 260, 6), new THREE.Vector3(0, 420, 0)];
-        await flyPath(pts, 6, (u) => { if (u > 0.75) setFlash(true); });
-        setFlash(true);
-        await sleep(500);
-        commit();
-        const to = pickTo();
-        rig.pos.set(0, 400, 0);
-        setFlash(false);
-        const out = route(new THREE.Vector3(0, 400, 0), to.pos);
-        await flyPath(out, flightDur(out));
-        arriveAt(to);
+        // 電脳空間 ⇔ 宇宙 は、いったん街を通る
+        if ((world.kind === "cyber" && w.kind === "orbit") || (world.kind === "orbit" && w.kind === "cyber")) {
+          const city = await ensureWorld("city");
+          await portal(city, V3(0, world.kind === "cyber" ? 900 : 1200, 0), null);
+        }
+        await portal(w, to.pos, commit);
       }
+      arriveAt(to);
+      return true;
+    } catch (err) {
+      worldError(err);
       return true;
     } finally {
       travelId = ""; travelDest = "";
-      setFlash(false);
       spotLabel();
       if (queuedTravel) { const next = queuedTravel; queuedTravel = ""; setTimeout(() => window.pallasTravelTo?.(next), 400); }
     }
@@ -6846,8 +6878,10 @@ try {
     if (!world || !worldOn) return;
     if (rig.flight) {
       const f = rig.flight;
-      const u = Math.min(1, (t - f.t0) / f.dur), ue = easeInOut(u);
+      const u = Math.min(1, (t - f.t0) / f.dur), ue = f.ease(u);
+      rig.prev.copy(rig.pos);
       f.curve.getPointAt(ue, rig.pos);
+      if (dt > 0) rig.vel.subVectors(rig.pos, rig.prev).divideScalar(dt);
       const tan = f.curve.getTangentAt(Math.min(0.999, ue));
       if (Math.hypot(tan.x, tan.z) > 0.2) rig.baseYaw = Math.atan2(-tan.x, -tan.z);
       rig.yaw = angLerp(rig.yaw, rig.baseYaw, 1 - Math.exp(-dt * 1.6));
@@ -6859,7 +6893,7 @@ try {
     const idle = state === "idle" && !(motion.departUntil && t < motion.departUntil);
     if (rig.path) {
       const remain = rig.len - rig.s;
-      const vmax = curArea === "space" ? 260 : curArea === "clouds" ? 90 : curArea === "cyber" ? 28 : 36;
+      const vmax = curArea === "space" ? 9000 : curArea === "clouds" ? 90 : curArea === "cyber" ? 28 : 36;
       const acc = vmax / 5;
       const want = idle ? Math.min(vmax, Math.sqrt(2 * acc * Math.max(0, remain)) + 0.5) : 0;
       rig.speed += Math.max(-acc * 1.3 * dt, Math.min(acc * dt, want - rig.speed));
@@ -6915,26 +6949,40 @@ try {
     camera.position.set(0, camState.y, camState.dist);
     camera.lookAt(0, camState.look, 0);
   }
+  const dipQ = new THREE.Quaternion();
+  const H_PX = () => innerHeight * worldPR() / (2 * Math.tan(THREE.MathUtils.degToRad(worldCam.fov / 2)));
+  // 1 つの場所を描く（pos・yaw は、その場所の中でのパラスのまわりの空間の位置と向き）
+  function drawWorld(w, pos, yaw, dt, t) {
+    rigQ.setFromAxisAngle(UP, yaw);
+    _v.copy(camera.position).multiplyScalar(rig.scale).applyQuaternion(rigQ).add(pos);
+    _q.copy(rigQ).multiply(camera.quaternion).multiply(pitchQ);
+    // 宇宙では地平線が下がる（地球が丸い）ので、その分カメラを下へ向ける
+    if (w.horizonDip) _q.multiply(dipQ.setFromAxisAngle(AXIS_X, -w.horizonDip(rig.pos.y) * 0.85));
+    worldCam.matrixWorld.compose(_v, _q, ONE);
+    worldCam.matrixWorldInverse.copy(worldCam.matrixWorld).invert();
+    // 高く昇るほど遠くまで見えるので、描く距離を伸ばす。手前の限界を近づけすぎると、遠くの面がチラつく
+    const [near, far] = w.camRange ? w.camRange(_v.y) : [Math.min(60, Math.max(1.5, _v.y / 500)), Math.max(30000, _v.y * 7 + 12000)];
+    if (Math.abs(worldCam.far - far) > far * 0.1 || Math.abs(worldCam.near - near) > near * 0.2) { worldCam.far = far; worldCam.near = near; worldCam.updateProjectionMatrix(); }
+    w.update(t, dt, worldCam, { accent, reduceMotion, sunDir, px: H_PX() });
+    w.view.renderer.render(w.scene, worldCam);
+  }
   function renderWorld(dt, t) {
-    if (!world || !worldRenderer) return;
+    if (!world || !world.view) return;
     if (!worldOn && t > worldFadeUntil) return;
     judgeQuality(dt);
     frameNo++;
-    if (saver() && frameNo % 2) return; // 省電力では街を 30 コマで描く
-    rigQ.setFromAxisAngle(UP, rig.yaw);
+    if (saver() && frameNo % 2) return; // 省電力では景色を 30 コマで描く
     camera.updateMatrixWorld();
-    _v.copy(camera.position).multiplyScalar(rig.scale).applyQuaternion(rigQ).add(rig.pos);
-    _q.copy(rigQ).multiply(camera.quaternion).multiply(pitchQ);
-    worldCam.matrixWorld.compose(_v, _q, ONE);
-    worldCam.matrixWorldInverse.copy(worldCam.matrixWorld).invert();
-    // 高く昇るほど遠くまで見えるので、描く距離を伸ばす
-    // 手前の限界（near）を近づけすぎると、遠くの面の前後が乱れてチラつく。高いほど遠ざける
-    const far = Math.max(30000, _v.y * 7 + 12000), near = Math.min(60, Math.max(1.5, _v.y / 500));
-    if (Math.abs(worldCam.far - far) > far * 0.1 || Math.abs(worldCam.near - near) > near * 0.2) { worldCam.far = far; worldCam.near = near; worldCam.updateProjectionMatrix(); }
     accent.copy(accentBase).lerp(accentThink, cur.purple);
-    const H = innerHeight * worldPR();
-    world.update(t, dt, worldCam, { accent, reduceMotion, sunDir, px: H / (2 * Math.tan(THREE.MathUtils.degToRad(worldCam.fov / 2))) });
-    worldRenderer.render(world.scene, worldCam);
+    // 入れ替えの途中：前の場所も、飛び続けている絵を描く（上に次の場所が重なって、だんだん見えなくなる）
+    if (coast) {
+      if (t > coast.until || coast.w === world) coast = null;
+      else {
+        coast.pos.addScaledVector(coast.vel, dt);
+        drawWorld(coast.w, coast.pos, coast.yaw, dt, t);
+      }
+    }
+    drawWorld(world, rig.pos, rig.yaw, dt, t);
   }
 
   function frame() {
