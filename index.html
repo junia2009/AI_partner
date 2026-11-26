@@ -5922,7 +5922,8 @@ if (!Recognition) {
   let traveling = false;
   window.__pallasCommitScene = (id) => setScene(id, false);
   function travel(toId) {
-    if (traveling) return;
+    // 飛んでいる途中に次の移動を頼まれたら、着いてから向かう（3D の側で順番を待たせる）
+    if (traveling) { if (window.__worldTravel && document.body.dataset.world) window.__worldTravel(toId); return; }
     // 3D の世界が出ているときは、世界の中を実際に飛んで移る
     if (window.__worldTravel && document.body.dataset.world) {
       traveling = true;
@@ -6293,6 +6294,14 @@ try {
   // パラスの見え方は「枠（#drone）」を基準に決める。3D の世界にいるときは、絵を画面いっぱいに広げて、
   // 枠の中心がカメラの中心になるようにずらす（setViewOffset）。枠の中での大きさは今までと同じ
   const BOX_FOV = 30;
+  // 描画面の大きさを変えると一瞬まっさらになるので、本当に変わったときだけ変える
+  function setRendererSize(r, pr, w, h) {
+    const key = `${pr.toFixed(3)}|${Math.round(w)}|${Math.round(h)}`;
+    if (r.__sizeKey === key) return;
+    r.__sizeKey = key;
+    r.setPixelRatio(pr);
+    r.setSize(w, h, false);
+  }
   let boxAspect = 1, baseDist = 4.6, full = false, boxKey = "";
   const camState = { dist: 4.6, y: 0.2, look: 0, init: false };
   // 情報カードが開いてパラスの枠に重なったら、カードより上の空いた所に、少し小さく映す
@@ -6340,14 +6349,12 @@ try {
     baseDist = Math.max(4.4, 1.55 / (Math.tan(halfFov) * boxAspect));
     if (full) {
       const W = innerWidth, H = innerHeight;
-      renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.75));
-      renderer.setSize(W, H, false);
+      setRendererSize(renderer, Math.min(window.devicePixelRatio, 1.75), W, H);
       camera.fov = THREE.MathUtils.radToDeg(2 * Math.atan(Math.tan(halfFov) * H / bh));
       camera.aspect = W / H;
       camera.setViewOffset(W, H, W / 2 - (b.left + bw / 2), H / 2 - (b.top + bh / 2), W, H);
     } else {
-      renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-      renderer.setSize(bw, bh, false);
+      setRendererSize(renderer, Math.min(window.devicePixelRatio, 2), bw, bh);
       camera.fov = BOX_FOV;
       camera.aspect = boxAspect;
       camera.clearViewOffset();
@@ -6524,7 +6531,7 @@ try {
 
   // 画質：なめらかさ（コマの間隔）を見て、街を描く細かさ（解像度）を上げ下げする
   const Q_LEVELS = [0.45, 0.6, 0.75, 0.9, 1.0];
-  let qLevel = 2, qSum = 0, qN = 0, qGood = 0, qHold = 0, frameNo = 0;
+  let qLevel = 2, qSum = 0, qN = 0, qGood = 0, qHold = 5, qDowns = 0, frameNo = 0;
   const saver = () => typeof settings !== "undefined" && settings.bgQuality === "saver";
   function worldPR() {
     const lv = saver() ? 0 : qLevel;
@@ -6532,8 +6539,7 @@ try {
   }
   function sizeWorld() {
     if (!worldRenderer) return;
-    worldRenderer.setPixelRatio(worldPR());
-    worldRenderer.setSize(innerWidth, innerHeight, false);
+    setRendererSize(worldRenderer, worldPR(), innerWidth, innerHeight);
     worldCam.fov = camera.fov; worldCam.aspect = camera.aspect;
     if (camera.view && camera.view.enabled) {
       const v = camera.view;
@@ -6551,8 +6557,9 @@ try {
     if (qN < 60) return;
     const avg = qSum / qN; qSum = 0; qN = 0;
     if (qHold > 0) return;
-    if (avg > 1 / 45 && qLevel > 0) { qLevel--; qGood = 0; qHold = 3; sizeWorld(); }
-    else if (avg < 1 / 57) { if (++qGood >= 6 && qLevel < Q_LEVELS.length - 1) { qLevel++; qGood = 0; qHold = 4; sizeWorld(); } }
+    // 下げるのはすぐ、上げるのは慎重に（上げ下げをくり返すと、そのたびに画面がちらつくため）
+    if (avg > 1 / 42 && qLevel > 0) { qLevel--; qGood = 0; qHold = 90; qDowns++; sizeWorld(); }
+    else if (avg < 1 / 57 && qDowns < 2) { if (++qGood >= 8 && qLevel < Q_LEVELS.length - 1) { qLevel++; qGood = 0; qHold = 6; sizeWorld(); } }
     else qGood = 0;
     for (const w of Object.values(worlds)) w.setQuality?.(qLevel);
   }
@@ -6715,7 +6722,7 @@ try {
   }
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const easeInOut = (x) => (x < 0.5 ? 4 * x * x * x : 1 - Math.pow(-2 * x + 2, 3) / 2);
-  let travelId = "", travelDest = "";
+  let travelId = "", travelDest = "", queuedTravel = "";
   function flyPath(pts, dur, onProgress) {
     return new Promise((resolve) => {
       rig.path = null; rig.wideUntil = 0;
@@ -6749,7 +6756,8 @@ try {
   async function worldTravel(toId) {
     const [id, variant] = String(toId).split(":");
     const want = WORLD_SCENES[id];
-    if (!want || !worldOn || !world || reduceMotion || travelId) return false;
+    if (!want || !worldOn || !world || reduceMotion) return false;
+    if (travelId) { queuedTravel = toId; return true; } // 飛んでいる途中なら、着いてから次へ
     const w = await ensureWorld(want.kind);
     const tod = forcedTod || (["dawn", "day", "sunset"].includes(variant) ? variant : null);
     travelId = toId;
@@ -6805,6 +6813,7 @@ try {
       travelId = ""; travelDest = "";
       setFlash(false);
       spotLabel();
+      if (queuedTravel) { const next = queuedTravel; queuedTravel = ""; setTimeout(() => window.pallasTravelTo?.(next), 400); }
     }
   }
   function arriveAt(to) {
@@ -6815,6 +6824,13 @@ try {
     spotLabel();
   }
   window.__worldTravel = worldTravel;
+  // 3D の世界でエラーが起きても、パラス本体の描画は止めない（同じエラーは一度だけ記録）
+  let lastWorldErr = "";
+  function worldError(err) {
+    const msg = String(err?.message || err);
+    if (msg !== lastWorldErr) { lastWorldErr = msg; console.warn("3D の景色でエラー:", err); }
+    if (rig.flight) { const f = rig.flight; rig.flight = null; f.resolve?.(); }
+  }
   const angLerp = (a, b, k) => { while (b - a > Math.PI) b -= Math.PI * 2; while (b - a < -Math.PI) b += Math.PI * 2; return a + (b - a) * k; };
 
   function updateRig(dt, t, state) {
@@ -6903,8 +6919,9 @@ try {
     worldCam.matrixWorld.compose(_v, _q, ONE);
     worldCam.matrixWorldInverse.copy(worldCam.matrixWorld).invert();
     // 高く昇るほど遠くまで見えるので、描く距離を伸ばす
-    const far = Math.max(30000, _v.y * 7 + 12000), near = Math.max(0.5, _v.y / 2500);
-    if (Math.abs(worldCam.far - far) > far * 0.1 || worldCam.near !== near) { worldCam.far = far; worldCam.near = near; worldCam.updateProjectionMatrix(); }
+    // 手前の限界（near）を近づけすぎると、遠くの面の前後が乱れてチラつく。高いほど遠ざける
+    const far = Math.max(30000, _v.y * 7 + 12000), near = Math.min(60, Math.max(1.5, _v.y / 500));
+    if (Math.abs(worldCam.far - far) > far * 0.1 || Math.abs(worldCam.near - near) > near * 0.2) { worldCam.far = far; worldCam.near = near; worldCam.updateProjectionMatrix(); }
     accent.copy(accentBase).lerp(accentThink, cur.purple);
     const H = innerHeight * worldPR();
     world.update(t, dt, worldCam, { accent, reduceMotion, sunDir, px: H / (2 * Math.tan(THREE.MathUtils.degToRad(worldCam.fov / 2))) });
@@ -6938,7 +6955,7 @@ try {
       if (`${b.left},${b.top},${b.width},${b.height},${innerWidth},${innerHeight}` !== boxKey) resize();
     }
     if (full) avoidPanel(dt);
-    updateRig(dt, t, state);
+    try { updateRig(dt, t, state); } catch (err) { worldError(err); }
     updateCamera(dt, t, state);
     const zNear = nearestZ();
     let stiff = 1.7, maxSpeed = 2.4;
@@ -7072,7 +7089,7 @@ try {
     const thrust = 1 + Math.sin(t * 9) * 0.12 + talk * 0.25;
     thrusterGlow.scale.set(base.thrusterScale.x, base.thrusterScale.y * thrust, base.thrusterScale.z);
 
-    renderWorld(dt, t);
+    try { renderWorld(dt, t); } catch (err) { worldError(err); }
     renderer.render(scene, camera);
     requestAnimationFrame(frame);
   }
