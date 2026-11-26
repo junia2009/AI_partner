@@ -170,7 +170,9 @@ export function createCity(THREE, opts = {}) {
           vec2 cell = vec2(u / 3.2, (vW.y - 1.5) / 3.7);
           vec2 id = floor(cell), f = fract(cell);
           float face = n.x * 3.0 + n.z * 7.0;
-          float win = step(0.16, f.x) * step(f.x, 0.84) * step(0.22, f.y) * step(f.y, 0.82);
+          vec2 fw = fwidth(cell);
+          vec2 wa = smoothstep(vec2(0.16, 0.22) - fw, vec2(0.16, 0.22) + fw, f) * smoothstep(vec2(0.84, 0.82) + fw, vec2(0.84, 0.82) - fw, f);
+          float win = wa.x * wa.y;
           float r = hash(id + vec2(vSeed * 13.1, face));
           float on = step(1.0 - vLit, r);
           // ときどき明かりが点いたり消えたりする
@@ -184,7 +186,7 @@ export function createCity(THREE, opts = {}) {
           vec3 near = mix(base * 0.95, glass, win) + lit * win;
           // 遠くは窓の模様がちらつくので、平均の明るさに置きかえる
           vec3 far = mix(base * 0.75, base * 0.7 + uZen * 0.12, uDay) + warm * vLit * uNight * 0.24;
-          float aa = clamp(max(fwidth(cell.x), fwidth(cell.y)) * 2.0 - 0.6, 0.0, 1.0);
+          float aa = clamp(max(fw.x, fw.y) * 3.2 - 0.35, 0.0, 1.0);
           col = mix(near, far, aa);
           // 1 階はお店の明かり
           if (vW.y < 5.5) col += vec3(1.0, 0.72, 0.42) * 0.22 * uNight * step(0.35, hash(vec2(floor(u / 9.0), vSeed)));
@@ -313,6 +315,7 @@ export function createCity(THREE, opts = {}) {
         gl_FragColor = vec4(applyFog(col, vDist), 1.0);
       }`,
   });
+  groundMat.polygonOffset = true; groundMat.polygonOffsetFactor = 4; groundMat.polygonOffsetUnits = 8; // 湾の水面とのチラつき防止
   const ground = new THREE.Mesh(new THREE.PlaneGeometry(400000, 400000, 1, 1).rotateX(-Math.PI / 2), groundMat);
   scene.add(ground);
 
@@ -354,7 +357,7 @@ export function createCity(THREE, opts = {}) {
       }`,
   });
   const water = new THREE.Mesh(new THREE.PlaneGeometry(14000, FAR_SHORE - SHORE, 1, 1).rotateX(-Math.PI / 2), waterMat);
-  water.position.set(0, 0.4, (SHORE + FAR_SHORE) / 2);
+  water.position.set(0, 1.2, (SHORE + FAR_SHORE) / 2);
   scene.add(water);
 
   // ---------- 湾にかかる橋 ----------
