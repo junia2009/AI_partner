@@ -69,7 +69,13 @@ export function createOrbit(THREE, opts = {}) {
         col += vec3(1.0, 0.95, 0.85) * pow(max(dot(n, normalize(uSunDir + v)), 0.0), 70.0) * sea * 0.7 * day * (1.0 - cl);
         col = mix(col, vec3(0.95, 0.97, 1.0) * (0.03 + 1.0 * max(ndl, 0.0)), cl * 0.9);
         // 夜の側：街の明かり
-        col += texture2D(uNight, vUv).rgb * vec3(1.0, 0.78, 0.5) * 1.5 * (1.0 - day) * (1.0 - cl * 0.75);
+        // 夜の側：月明かりで陸と海の形がうっすら見え、街の明かりが灯る
+        float night = 1.0 - day;
+        col += dayTex * vec3(0.06, 0.08, 0.15) * 0.35 * night;
+        vec3 lights = texture2D(uNight, vUv).rgb;
+        lights = pow(lights, vec3(0.85)) * 2.3;             // 縮めて薄まった細かい明かりを持ち上げる
+        col += lights * vec3(1.0, 0.8, 0.52) * night * (1.0 - cl * 0.45);
+        col += vec3(1.0, 0.75, 0.45) * smoothstep(0.1, 0.6, lights.r) * 0.1 * night; // 大きな街のほんのりした明るさ
         // 朝夕の境目は少し赤く
         col *= mix(vec3(1.0), vec3(1.25, 0.8, 0.6), smoothstep(0.25, 0.0, abs(ndl)) * 0.6);
         // パラスの街（てっぺん）にかすかな光
