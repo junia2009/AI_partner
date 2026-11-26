@@ -71,7 +71,7 @@ export function createOrbit(THREE, opts = {}) {
         gl_FragColor = vec4(col, 1.0);
       }`,
   });
-  const earth = new THREE.Mesh(new THREE.SphereGeometry(R, 384, 192), earthMat);
+  const earth = new THREE.Mesh(new THREE.SphereGeometry(R, 256, 128), earthMat);
   earth.quaternion.copy(earthQ);
   earth.position.set(0, -R, 0);
   scene.add(earth);
