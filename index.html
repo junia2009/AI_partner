@@ -57,13 +57,13 @@
   /* AIらしい背景：粒子ネットワーク（canvas）＋グリッド＋走査線 */
   #bg { position: fixed; inset: 0; width: 100%; height: 100%; z-index: 0; pointer-events: none; transition: opacity 1.4s ease; }
   /* 3D の世界（街など）。表示中は 2D の背景を消して、パラスを画面いっぱいの層で描く */
-  #world { display: none; }
+  #world { position: fixed; inset: 0; width: 100%; height: 100%; z-index: 0; pointer-events: none; display: block; }
   body[data-world] #bg { opacity: 0; }
   body[data-world]::before { opacity: 0; }
   #pallasCanvas.full { position: fixed; inset: 0; width: 100%; height: 100%; z-index: 0; pointer-events: none; }
   body[data-world] .drone::before, body[data-world] .hud { opacity: 0; transition: opacity 1s ease; }
   /* 3D の場所ごとの描画面。移るときは、前の景色の上に次の景色を重ねて、なめらかに入れ替える */
-  .world-layer { position: fixed; inset: 0; width: 100%; height: 100%; z-index: 0; pointer-events: none; display: block; opacity: 0; }
+  .world-snap { position: fixed; inset: 0; width: 100%; height: 100%; z-index: 0; pointer-events: none; display: block; opacity: 0; transform-origin: 50% 35%; }
   body::before {
     content: ""; position: fixed; inset: 0; z-index: 0; pointer-events: none;
     background-image:
@@ -6346,7 +6346,7 @@ try {
     if (camera.view && Math.abs(camera.view.offsetY - offY) > 0.3) {
       camera.setViewOffset(W, H, camera.view.offsetX, offY, W, H);
       camera.updateProjectionMatrix();
-      if (Object.keys(views).length) {
+      if (wr) {
         worldCam.setViewOffset(W, H, camera.view.offsetX, offY, W, H);
         worldCam.updateProjectionMatrix();
         const focal = (H / 2) / Math.tan(THREE.MathUtils.degToRad(camera.fov / 2));
@@ -6364,7 +6364,7 @@ try {
     baseDist = Math.max(4.4, 1.55 / (Math.tan(halfFov) * boxAspect));
     if (full) {
       const W = innerWidth, H = innerHeight;
-      setRendererSize(renderer, Math.min(window.devicePixelRatio, 1.75), W, H);
+      setRendererSize(renderer, Math.min(window.devicePixelRatio, 1.5), W, H); // 画面いっぱいなのでメモリを食いすぎないよう控えめに
       camera.fov = THREE.MathUtils.radToDeg(2 * Math.atan(Math.tan(halfFov) * H / bh));
       camera.aspect = W / H;
       camera.setViewOffset(W, H, W / 2 - (b.left + bw / 2), H / 2 - (b.top + bh / 2), W, H);
@@ -6502,30 +6502,55 @@ try {
     cyber: { fog: 0x0b1220, key: 0xffffff, keyI: 1.3, rim: 0x7cc4ff, sky: 0xbfd9ff, ground: 0x0b0f17 },
   };
   const bgEl = document.getElementById("bg");
-  const worlds = {}, worldLoads = {}, views = {};
-  let world = null, worldOn = false, worldFadeUntil = 0, coast = null;
-  // 場所の種類（街・電脳空間・宇宙）ごとに描画面を 1 枚ずつ持つ。移るときは 2 枚を重ねて入れ替える
-  function makeView(kind) {
-    const c = document.createElement("canvas");
-    c.className = "world-layer";
-    c.setAttribute("aria-hidden", "true");
-    document.body.insertBefore(c, bgEl);
-    const r = new THREE.WebGLRenderer({ canvas: c, antialias: false, powerPreference: "high-performance" });
-    r.outputColorSpace = THREE.LinearSRGBColorSpace;
-    return (views[kind] = { canvas: c, renderer: r, kind });
-  }
-  function showView(kind, fade) {
-    const v = views[kind];
-    if (!v) return;
-    document.body.insertBefore(v.canvas, bgEl); // いちばん上へ
-    v.canvas.style.transition = "none";
-    if (fade) { v.canvas.style.opacity = "0"; void v.canvas.offsetWidth; v.canvas.style.transition = "opacity 1.6s ease"; }
-    v.canvas.style.opacity = "1";
-    for (const o of Object.values(views)) {
-      if (o === v) continue;
-      if (fade) setTimeout(() => { if (world?.kind !== o.kind) { o.canvas.style.transition = "none"; o.canvas.style.opacity = "0"; } }, 1750);
-      else { o.canvas.style.transition = "none"; o.canvas.style.opacity = "0"; }
+  const worlds = {}, worldLoads = {};
+  let world = null, worldOn = false, worldFadeUntil = 0;
+  // 景色を描く面は 1 枚だけ（場所ごとに持つとメモリが足りなくなり、iPhone でページが落ちる）。
+  // 場所を移るときは、その瞬間の景色を「写真」に撮って上に重ね、写真が前へ流れながら消えていく間に下を切り替える
+  const worldCanvasEl = document.getElementById("world");
+  let wr = null; // 景色用の WebGL（1 つだけ）
+  function worldRendererGet() {
+    if (!wr) {
+      wr = new THREE.WebGLRenderer({ canvas: worldCanvasEl, antialias: false, powerPreference: "high-performance" });
+      wr.outputColorSpace = THREE.LinearSRGBColorSpace;
     }
+    return wr;
+  }
+  const snapEl = document.createElement("canvas");
+  snapEl.className = "world-snap";
+  snapEl.setAttribute("aria-hidden", "true");
+  document.body.insertBefore(snapEl, bgEl);
+  let snapWanted = null;
+  // 次に景色を描いた直後に、その絵を写真として写し取る
+  function takeSnapshot() { return new Promise((resolve) => { snapWanted = resolve; }); }
+  function grabSnapshot() {
+    const W = Math.round(innerWidth), H = Math.round(innerHeight);
+    if (snapEl.width !== W || snapEl.height !== H) { snapEl.width = W; snapEl.height = H; }
+    const g = snapEl.getContext("2d");
+    g.drawImage(worldCanvasEl, 0, 0, W, H);
+  }
+  function fadeSnapshot() {
+    snapEl.style.transition = "none";
+    snapEl.style.opacity = "1";
+    snapEl.style.transform = "scale(1)";
+    void snapEl.offsetWidth;
+    snapEl.style.transition = "opacity 1.5s ease, transform 1.5s ease-in";
+    snapEl.style.opacity = "0";
+    snapEl.style.transform = "scale(1.14)";
+  }
+  // 離れた場所（電脳空間・宇宙）の描画データは捨てて、メモリをあける（また行くときに作り直す）
+  function dropWorld(kind) {
+    const w = worlds[kind];
+    if (!w || w === world || kind === "city") return;
+    w.scene.traverse((o) => {
+      o.geometry?.dispose?.();
+      const mats = Array.isArray(o.material) ? o.material : o.material ? [o.material] : [];
+      for (const m of mats) {
+        for (const u of Object.values(m.uniforms || {})) if (u?.value?.isTexture) u.value.dispose();
+        m.dispose();
+      }
+    });
+    delete worlds[kind];
+    delete worldLoads[kind];
   }
   let curScene = null, curArea = "", curTod = "night", areaSwitching = false;
   const qs = new URLSearchParams(location.search);
@@ -6577,8 +6602,8 @@ try {
     return Math.max(0.5, Math.min(window.devicePixelRatio || 1, 2) * Q_LEVELS[lv]);
   }
   function sizeWorld() {
-    if (!Object.keys(views).length) return;
-    for (const v of Object.values(views)) setRendererSize(v.renderer, worldPR(), innerWidth, innerHeight);
+    if (!wr) return;
+    setRendererSize(wr, worldPR(), innerWidth, innerHeight);
     worldCam.fov = camera.fov; worldCam.aspect = camera.aspect;
     if (camera.view && camera.view.enabled) {
       const v = camera.view;
@@ -6593,7 +6618,7 @@ try {
   function judgeQuality(dt) {
     if (saver()) return;
     // 移動中は描く量が一時的に増えるので判定しない（解像度を変えると、その瞬間にカクつく）
-    if (rig.flight || coast) { qSum = 0; qN = 0; return; }
+    if (rig.flight) { qSum = 0; qN = 0; return; }
     qSum += dt; qN++; qHold -= dt;
     if (qN < 60) return;
     const avg = qSum / qN; qSum = 0; qN = 0;
@@ -6607,15 +6632,13 @@ try {
 
   function ensureWorld(kind) {
     worldLoads[kind] ||= import(`./world/${kind}.js`).then((mod) => {
-      const v = views[kind] || makeView(kind);
-      const aniso = Math.min(8, v.renderer.capabilities.getMaxAnisotropy());
+      const r = worldRendererGet();
+      const aniso = Math.min(4, r.capabilities.getMaxAnisotropy());
       const w = kind === "cyber" ? mod.createCyber(THREE) : kind === "orbit" ? mod.createOrbit(THREE, { anisotropy: aniso }) : mod.createCity(THREE, { anisotropy: aniso });
-      w.kind = kind; w.view = v;
+      w.kind = kind;
       w.setQuality?.(saver() ? 0 : qLevel);
       worlds[kind] = w;
       sizeWorld();
-      // 初めて使うときに止まらないよう、描き方（シェーダー）を先に用意しておく
-      try { v.renderer.compile(w.scene, worldCam); } catch {}
       return w;
     });
     return worldLoads[kind];
@@ -6691,18 +6714,15 @@ try {
         worldOn = true;
         window.__worldShownAt = performance.now();
         setFull(true);
-        showView(w.kind, false);
         document.body.dataset.world = want.area;
         spotLabel();
-        // ほかの場所も、あとで止まらないよう先に読み込んでおく
-        setTimeout(() => { ensureWorld("cyber"); ensureWorld("city"); }, 8000);
-        setTimeout(() => ensureWorld("orbit"), 20000);
+        // ほかの場所のプログラムだけ先に取ってくる（景色そのものは、行くときに作る）
+        setTimeout(() => { import("./world/cyber.js").catch(() => {}); import("./world/city.js").catch(() => {}); import("./world/orbit.js").catch(() => {}); }, 8000);
       } else if (curArea !== want.area || world !== w) {
         // 飛ばずに移るとき（動きを減らす設定など）：重ねて入れ替える
-        const kindChanged = world !== w;
-        enter();
-        if (kindChanged) showView(w.kind, true);
-        document.body.dataset.world = want.area;
+        const kindChanged = world !== w, old = world?.kind;
+        const go = () => { enter(); document.body.dataset.world = want.area; if (kindChanged) { fadeSnapshot(); setTimeout(() => dropWorld(old), 2000); } };
+        if (kindChanged) takeSnapshot().then(go); else go();
       } else {
         // 同じ場所の中で天気だけ変わる（街 ⇔ 雨）
         curScene = id;
@@ -6787,7 +6807,7 @@ try {
   }
   const flightDur = (pts) => {
     const len = new THREE.CatmullRomCurve3(pts, false, "centripetal").getLength();
-    return Math.min(16, Math.max(6, 3 + Math.log10(len + 10) * 2.6));
+    return Math.min(12, Math.max(5, 2.5 + Math.log10(len + 10) * 2.2));
   };
   const V3 = (x, y, z) => new THREE.Vector3(x, y, z);
   // 種類の違う場所へ（街 ⇔ 電脳空間 ⇔ 宇宙）：前の景色の中を飛び続けながら、次の景色の中を飛んでいる絵を重ね、なめらかに入れ替える
@@ -6814,11 +6834,13 @@ try {
       B0 = [V3(x, 28000, z), V3(dest.x * 0.8, Math.max(dest.y + 2500, 7000), dest.z * 0.8)];
     }
     await flyPath(A, flightDur(A), null, easeIn);
-    coast = { w: world, pos: rig.pos.clone(), vel: rig.vel.clone(), yaw: rig.yaw, until: clock.elapsedTime + 1.8 };
+    // 今の景色を写真に撮って重ね、前へ流れながら消える間に、下を次の場所に切り替える
+    await takeSnapshot();
     world = toW;
     onSwitch?.();
-    showView(toK, true);
     rig.pos.copy(B0[0]);
+    fadeSnapshot();
+    setTimeout(() => dropWorld(fromK), 2000);
     const tail = route(B0[B0.length - 1], dest).slice(1);
     const B = [...B0, ...tail];
     await flyPath(B, flightDur(B), null, easeOut);
@@ -6977,25 +6999,17 @@ try {
     const [near, far] = w.camRange ? w.camRange(_v.y) : [Math.min(60, Math.max(1.5, _v.y / 500)), Math.max(30000, _v.y * 7 + 12000)];
     if (Math.abs(worldCam.far - far) > far * 0.1 || Math.abs(worldCam.near - near) > near * 0.2) { worldCam.far = far; worldCam.near = near; worldCam.updateProjectionMatrix(); }
     w.update(t, dt, worldCam, { accent, reduceMotion, sunDir, px: H_PX() });
-    w.view.renderer.render(w.scene, worldCam);
+    wr.render(w.scene, worldCam);
+    if (snapWanted) { const done = snapWanted; snapWanted = null; try { grabSnapshot(); } catch {} done(); }
   }
   function renderWorld(dt, t) {
-    if (!world || !world.view) return;
+    if (!world || !wr) return;
     if (!worldOn && t > worldFadeUntil) return;
     judgeQuality(dt);
     frameNo++;
     if (saver() && frameNo % 2) return; // 省電力では景色を 30 コマで描く
     camera.updateMatrixWorld();
     accent.copy(accentBase).lerp(accentThink, cur.purple);
-    // 入れ替えの途中：前の場所も、飛び続けている絵を描く（上に次の場所が重なって、だんだん見えなくなる）
-    if (coast) {
-      if (t > coast.until || coast.w === world) coast = null;
-      else {
-        coast.pos.addScaledVector(coast.vel, dt);
-        // 重ねて入れ替える間、下になって消えていく景色は 1 コマおきに描く（描く量を抑える）
-        if (frameNo % 2 === 0 || !coast.drawn) { drawWorld(coast.w, coast.pos, coast.yaw, dt * 2, t); coast.drawn = true; }
-      }
-    }
     drawWorld(world, rig.pos, rig.yaw, dt, t);
   }
 
