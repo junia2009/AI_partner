@@ -24,7 +24,6 @@ iPhone・iPad は Safari／Edge の「ホーム画面に追加」でアプリの
 | 📝 やること | 「牛乳買うの追加して」「やること読んで」「牛乳買った」 |
 | ☀ 朝の報告 | 朝はじめて開いたとき、今日の予定・やること・タイマーをまとめて伝える |
 | 📅 Google カレンダー | 「明日の予定は？」「金曜15時に打ち合わせ入れて」 |
-| 📊 Excel（OneDrive） | 「家計簿見せて」「ランチ800円を足して」「読書記録の表を作って」（個人の Microsoft アカウント） |
 | ✉️ Gmail | 「未読メールまとめて」「それに返信の下書きして」（送信はせず下書きに保存） |
 | 🗺 お店・場所の検索 | 「近くのカフェある？」「今開いてるラーメン屋」→ 地図つきカード |
 | 🧭 経路案内（ナビ） | 「東京駅までの行き方」「渋谷まで何分？」→ 経路カードと「ナビ開始」ボタン |
@@ -55,7 +54,6 @@ iPhone・iPad は Safari／Edge の「ホーム画面に追加」でアプリの
 | Fish Audio の自然な声 | Fish Audio のキー |
 | iPhone・iPad でのマイクの聞き取り | Fish Audio のキー（文字起こしは有料・ごく少額） |
 | Google カレンダー・Gmail | Google Cloud の OAuth クライアント |
-| Excel・OneDrive | Microsoft のアプリ登録（個人アカウント用・SPA）。手順は [docs/microsoft.md](docs/microsoft.md) |
 | お店の検索・経路案内 | Google Maps のキー（Places API (New)・Routes API） |
 | 地図を Google マップで表示 | ブラウザ用の Maps JavaScript API キー（サイト制限つき） |
 | 電車の乗り換え（任意・未使用） | RapidAPI の NAVITIME キー |
