@@ -5898,7 +5898,15 @@ if (!Recognition) {
     const el = document.getElementById("place");
     if (el) el.textContent = s.label;
   }
+  function commitLazy(id) {
+    const [name] = String(id).split(":");
+    if (!SCENES[name]) return;
+    previous = null; fade = 1;
+    current = { id, lazy: true, label: document.getElementById("place")?.textContent || "", light: null, draw() {} }; // 「現在地」は 3D 側が書く
+    announce(current);
+  }
   function setScene(id, withFade) {
+    if (document.body.dataset.world) { commitLazy(id); return; } // 3D が出ているなら 2D は作らない
     previous = withFade ? current : null;
     current = build(id);
     fade = withFade ? 0 : 1;
@@ -5920,7 +5928,9 @@ if (!Recognition) {
   }
   window.addEventListener("resize", resize);
   resize();
-  setScene(forced || pickNext(), false);
+  // 予備の 2D の絵は、3D の景色が使えないとわかったときにだけ作る（ふだんは作らずメモリを節約）
+  commitLazy(forced || pickNext());
+  const bootAt = performance.now();
 
   // ---------- 移動（気まぐれ・時間帯の変化） ----------
   // パラスが奥へ飛び去る → 景色が切り替わる → 新しい場所で戻ってくる
@@ -5928,13 +5938,7 @@ if (!Recognition) {
   let traveling = false;
   // 3D の世界の中を飛んで移ったときの合図。見えていない 2D の絵は作り直さない（重く、移動中にカクつくため）。
   // 場面の名前だけ合わせ、2D の絵は本当に必要になったとき（3D が消えたとき）に作る
-  window.__pallasCommitScene = (id) => {
-    const [name] = String(id).split(":");
-    if (!SCENES[name]) return;
-    previous = null; fade = 1;
-    current = { id, lazy: true, label: document.getElementById("place")?.textContent || "", light: null, draw() {} }; // 「現在地」は 3D 側が書く
-    announce(current);
-  };
+  window.__pallasCommitScene = commitLazy;
   function travel(toId) {
     // 飛んでいる途中に次の移動を頼まれたら、着いてから向かう（3D の側で順番を待たせる）
     if (traveling) { if (window.__worldTravel && document.body.dataset.world) window.__worldTravel(toId); return; }
@@ -5997,7 +6001,11 @@ if (!Recognition) {
     const t = now / 1000;
     // 3D の世界が表示されているあいだは、隠れている 2D の景色を描かない（電池の節約）
     if (document.body.dataset.world && !previous && now - (window.__worldShownAt || now) > 1600) { requestAnimationFrame(frame); return; }
-    if (current.lazy) current = build(current.id);
+    if (current.lazy) {
+      // 3D の準備中（起動から 6 秒まで）は待つ。それを過ぎても 3D が出ていなければ、2D を作って描く
+      if (document.body.dataset.world || (!window.__worldFailed && now - bootAt < 6000)) { requestAnimationFrame(frame); return; }
+      current = build(current.id);
+    }
     const state = document.body.dataset.state || "idle";
     const target = STATE_COLORS[state] || STATE_COLORS.idle;
     for (let i = 0; i < 3; i++) col[i] += (target[i] - col[i]) * 0.05;
@@ -6503,17 +6511,40 @@ try {
   };
   const bgEl = document.getElementById("bg");
   const worlds = {}, worldLoads = {};
-  let world = null, worldOn = false, worldFadeUntil = 0;
+  let world = null, worldOn = false, worldFadeUntil = 0, worldFails = 0;
   // 景色を描く面は 1 枚だけ（場所ごとに持つとメモリが足りなくなり、iPhone でページが落ちる）。
   // 場所を移るときは、その瞬間の景色を「写真」に撮って上に重ね、写真が前へ流れながら消えていく間に下を切り替える
   const worldCanvasEl = document.getElementById("world");
   let wr = null; // 景色用の WebGL（1 つだけ）
+  let worldCanvas = worldCanvasEl;
   function worldRendererGet() {
     if (!wr) {
-      wr = new THREE.WebGLRenderer({ canvas: worldCanvasEl, antialias: false, powerPreference: "high-performance" });
+      wr = new THREE.WebGLRenderer({ canvas: worldCanvas, antialias: false, powerPreference: "high-performance" });
       wr.outputColorSpace = THREE.LinearSRGBColorSpace;
+      watchContext(worldCanvas);
     }
     return wr;
+  }
+  // iPhone はメモリが足りないときやアプリを裏に回したとき、3D の描画を取り上げることがある。
+  // 2 秒たっても戻らなければ、描画面を作り直す（景色のデータは新しい描画面に自動で送り直される）
+  function watchContext(c) {
+    c.addEventListener("webglcontextlost", (e) => {
+      e.preventDefault();
+      try { window.diag?.("🌐 3D の景色の描画が中断された（作り直します）"); } catch {}
+      const lostWr = wr;
+      setTimeout(() => {
+        if (wr !== lostWr || !lostWr.getContext().isContextLost()) return;
+        const n = document.createElement("canvas");
+        n.id = "world";
+        n.setAttribute("aria-hidden", "true");
+        c.replaceWith(n);
+        worldCanvas = n;
+        try { lostWr.dispose(); } catch {}
+        wr = null;
+        worldRendererGet();
+        sizeWorld();
+      }, 2000);
+    });
   }
   const snapEl = document.createElement("canvas");
   snapEl.className = "world-snap";
@@ -6526,7 +6557,7 @@ try {
     const W = Math.round(innerWidth), H = Math.round(innerHeight);
     if (snapEl.width !== W || snapEl.height !== H) { snapEl.width = W; snapEl.height = H; }
     const g = snapEl.getContext("2d");
-    g.drawImage(worldCanvasEl, 0, 0, W, H);
+    g.drawImage(worldCanvas, 0, 0, W, H);
   }
   function fadeSnapshot() {
     snapEl.style.transition = "none";
@@ -6709,6 +6740,7 @@ try {
         spotLabel();
         applyLight();
       };
+      worldFails = 0; window.__worldFailed = false;
       if (!worldOn) {
         enter();
         worldOn = true;
@@ -6729,7 +6761,14 @@ try {
         w.setWeather?.(want.weather);
         spotLabel(); applyLight();
       }
-    }).catch((err) => console.warn("3D の景色を表示できませんでした:", err));
+    }).catch((err) => {
+      console.warn("3D の景色を表示できませんでした:", err);
+      delete worldLoads[want.kind];
+      worldFails++;
+      try { window.diag?.(`🌐 3D の景色の準備に失敗（${worldFails} 回目）: ${err?.message || err}`); } catch {}
+      if (worldFails >= 2) window.__worldFailed = true; // 2D の予備を出す
+      if (worldFails < 6) setTimeout(syncWorld, 4000 * worldFails); // 少し待ってやり直す
+    });
   }
   // 時間帯は 1 分ごとに見直す（夕方から夜へ、など）
   setInterval(() => {
