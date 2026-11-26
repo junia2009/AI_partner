@@ -4,10 +4,11 @@
 // - CDN のライブラリ（three.js、Anthropic SDK）はバージョン固定なので「保存版優先」で速く起動
 // - Claude や Fish Audio への通信（POST）は一切保存しない
 
-const VERSION = "pallas-v1";
+const VERSION = "pallas-v2";
 const APP_SHELL = [
   "./",
   "./index.html",
+  "./world/city.js",
   "./manifest.webmanifest",
   "./icons/icon-192.png",
   "./icons/icon-512.png",

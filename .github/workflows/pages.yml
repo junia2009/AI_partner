@@ -29,7 +29,7 @@ jobs:
         run: |
           mkdir -p _site
           cp index.html manifest.webmanifest sw.js _site/
-          cp -r icons _site/
+          cp -r icons world _site/
           mkdir -p _site/assets && cp -r assets/vosk _site/assets/
           touch _site/.nojekyll
 
