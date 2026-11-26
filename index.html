@@ -57,7 +57,7 @@
   /* AIらしい背景：粒子ネットワーク（canvas）＋グリッド＋走査線 */
   #bg { position: fixed; inset: 0; width: 100%; height: 100%; z-index: 0; pointer-events: none; transition: opacity 1.4s ease; }
   /* 3D の世界（街など）。表示中は 2D の背景を消して、パラスを画面いっぱいの層で描く */
-  #world { position: fixed; inset: 0; width: 100%; height: 100%; z-index: 0; pointer-events: none; display: block; }
+  #world { position: fixed; inset: 0; width: 100%; height: 100%; z-index: 0; pointer-events: none; display: block; transition: opacity .7s ease; }
   body[data-world] #bg { opacity: 0; }
   body[data-world]::before { opacity: 0; }
   #pallasCanvas.full { position: fixed; inset: 0; width: 100%; height: 100%; z-index: 0; pointer-events: none; }
@@ -3418,7 +3418,7 @@ function stripMeta(t) {
 // 場所の移動は、返事を話し終えてから行う
 let pendingTravel = null;
 const PLACE_NAMES = {
-  cyber: "電脳空間", city: "夜の街の上空", space: "星空", "sky:dawn": "雲の上（朝焼け）",
+  cyber: "電脳空間", city: "街の上空", space: "成層圏の星空", "sky:dawn": "雲の上（朝焼け）",
   "sky:day": "雲の上（青空）", "sky:sunset": "雲の上（夕焼け）", rain: "雨の夜",
 };
 
@@ -4425,7 +4425,7 @@ async function send(text, { hidden = false } = {}) {
     recogEnd: fromVoice ? recogEndAt : 0,
   };
   recogEndAt = 0;
-  const place = window.__pallasSceneId ? `[景色: ${PLACE_NAMES[window.__pallasSceneId] || window.__pallasSceneId}${window.__pallasSpot ? `・${window.__pallasSpot}` : ""}]` : "";
+  const place = window.__pallasSceneId ? `[景色: ${window.__pallasPlaceLabel || PLACE_NAMES[window.__pallasSceneId] || window.__pallasSceneId}${window.__pallasSpot ? `・${window.__pallasSpot}` : ""}]` : "";
   const tb = timersBlock();
   const td = todosBlock();
   const gtag = googleConnected() ? "\n[Google: カレンダー・Gmail 接続中]" : "";
@@ -5866,9 +5866,9 @@ if (!Recognition) {
   // 時間帯ごとの候補（「シーン名:種類」）。電脳空間は昼も夜も行ける
   function poolForNow() {
     const hr = new Date().getHours();
-    if (hr >= 5 && hr < 8) return ["sky:dawn"];
-    if (hr >= 8 && hr < 16) return ["sky:day", "cyber"];
-    if (hr >= 16 && hr < 19) return ["sky:sunset"];
+    if (hr >= 5 && hr < 8) return ["sky:dawn", "city"];
+    if (hr >= 8 && hr < 16) return ["sky:day", "cyber", "city"];
+    if (hr >= 16 && hr < 19) return ["sky:sunset", "city"];
     return ["city", "space", "rain", "cyber"];
   }
   function build(id) {
@@ -6397,14 +6397,65 @@ try {
   let boxCheck = 0;
 
   // ===================================================================
-  // 3D の世界（第1段階：街）
+  // 3D の世界（第2段階：街・雲海・成層圏・電脳空間）
   // パラスとカメラは今までどおり「パラスのまわりの小さな空間」で動く。その空間ごと（rig）を
-  // 街の中で動かし・回すことで、カメラが街を移動したり回り込んだりしているように見せる。
-  // 街はもう一枚のキャンバス（#world）に描き、2D の背景はその上で透明にする。
+  // 世界の中で動かし・回すことで、カメラが移動したり回り込んだりしているように見せる。
+  // 世界はもう一枚のキャンバス（#world）に描き、2D の背景はその上で透明にする（2D は WebGL が使えないときの予備）。
+  // 縦につながった世界：街（地上〜ビルの上）→ 雲海（1100〜1340m）→ 成層圏（1万m 以上）。電脳空間はタワーの奥の別の空間。
   // ===================================================================
-  const WORLD_SCENES = { city: { weather: "clear", label: "夜の街の上空" }, rain: { weather: "rain", label: "雨の夜" } };
+  const WORLD_SCENES = {
+    city: { kind: "city", area: "city", weather: "clear" },
+    rain: { kind: "city", area: "city", weather: "rain" },
+    sky: { kind: "city", area: "clouds", weather: "clear" },
+    space: { kind: "city", area: "space", weather: "clear" },
+    cyber: { kind: "cyber", area: "cyber" },
+  };
+  const AREA_LABEL = {
+    city: { night: "夜の街の上空", dawn: "朝焼けの街の上空", day: "昼の街の上空", sunset: "夕暮れの街の上空" },
+    rain: { night: "雨の夜", dawn: "雨の朝", day: "雨の街", sunset: "雨の夕暮れ" },
+    clouds: { night: "夜の雲海の上", dawn: "雲の上（朝焼け）", day: "雲の上（青空）", sunset: "雲の上（夕焼け）" },
+    space: { night: "成層圏の星空", dawn: "成層圏の夜明け", day: "成層圏", sunset: "成層圏の夕暮れ" },
+    cyber: { night: "電脳空間", dawn: "電脳空間", day: "電脳空間", sunset: "電脳空間" },
+  };
+  // パラス本体の照らし方（時間帯・場所ごと）
+  const LIGHTS = {
+    night: { fog: 0x1c1430, key: 0xd8d4ff, keyI: 1.1, rim: 0xff7ac8, sky: 0x9aa8ff, ground: 0x2a1640 },
+    rain: { fog: 0x0e1626, key: 0xc4d2ff, keyI: 1.0, rim: 0x6aa0ff, sky: 0x9ab0d8, ground: 0x0a1018 },
+    dawn: { fog: 0x9a7090, key: 0xffd2b0, keyI: 1.5, rim: 0xff9a70, sky: 0xffd8c0, ground: 0x3a3060 },
+    day: { fog: 0x86b2d8, key: 0xffffff, keyI: 1.6, rim: 0xc0e6ff, sky: 0xe0f0ff, ground: 0x5a7090 },
+    sunset: { fog: 0x8a4a5a, key: 0xffb080, keyI: 1.5, rim: 0xff7040, sky: 0xffc0a0, ground: 0x301838 },
+    space: { fog: 0x05070f, key: 0xe8eeff, keyI: 1.15, rim: 0x9a8cff, sky: 0xb8c4ff, ground: 0x05060f },
+    cyber: { fog: 0x0b1220, key: 0xffffff, keyI: 1.3, rim: 0x7cc4ff, sky: 0xbfd9ff, ground: 0x0b0f17 },
+  };
   const worldCanvas = document.getElementById("world");
-  let world = null, worldLoading = null, worldRenderer = null, worldOn = false, worldFadeUntil = 0, worldLabel = "";
+  const worlds = {}, worldLoads = {};
+  let world = null, worldRenderer = null, worldOn = false, worldFadeUntil = 0;
+  let curScene = null, curArea = "", curTod = "night", areaSwitching = false;
+  const qs = new URLSearchParams(location.search);
+  const forcedTod = ["night", "dawn", "day", "sunset"].includes(qs.get("tod")) ? qs.get("tod") : null; // 動作確認用： ?tod=day
+
+  // 太陽の向き（実際の時刻から大まかに。日の出・日の入りは季節で少し動かす）
+  const sunDir = new THREE.Vector3();
+  function sunFor(tod) {
+    const now = new Date();
+    let h = now.getHours() + now.getMinutes() / 60;
+    const doy = Math.floor((now - new Date(now.getFullYear(), 0, 0)) / 864e5);
+    const dayLen = 12 + 2.2 * Math.sin(2 * Math.PI * (doy - 80) / 365);
+    const rise = 12 - dayLen / 2, set = 12 + dayLen / 2;
+    if (tod) h = { night: 0, dawn: rise + 0.35, day: 12.5, sunset: set - 0.35 }[tod];
+    let elev, az;
+    // 南中高度：90° − 緯度（東京あたり 35.7°）＋ 赤緯
+    const decl = 23.44 * Math.sin(2 * Math.PI * (doy - 81) / 365);
+    const noon = THREE.MathUtils.degToRad(90 - 35.7 + decl);
+    if (h >= rise && h <= set) { const f = (h - rise) / dayLen; elev = Math.sin(Math.PI * f) * noon; az = Math.PI * f; }
+    else { const nl = 24 - dayLen, f = ((h - set + 24) % 24) / nl; elev = -Math.sin(Math.PI * f) * 0.7; az = Math.PI + Math.PI * f; }
+    // az：0 で東（+x）、π/2 で南（+z）、π で西
+    sunDir.set(Math.cos(az) * Math.cos(elev), Math.sin(elev), Math.sin(az) * Math.cos(elev)).normalize();
+    const sy = sunDir.y;
+    const name = sy < -0.1 ? "night" : sy < 0.25 ? (h < 12 ? "dawn" : "sunset") : "day";
+    return name;
+  }
+  sunFor(forcedTod);
   const worldCam = new THREE.PerspectiveCamera(30, 1, 0.5, 12000);
   worldCam.matrixWorldAutoUpdate = false;
   const rig = {
@@ -6441,7 +6492,7 @@ try {
     const focal = (H / 2) / Math.tan(THREE.MathUtils.degToRad(camera.fov / 2));
     pitchQ.setFromAxisAngle(AXIS_X, Math.atan((H * 0.46 - axisY) / focal));
   }
-  window.addEventListener("pallas:quality", sizeWorld);
+  window.addEventListener("pallas:quality", () => { sizeWorld(); for (const w of Object.values(worlds)) w.setQuality?.(saver() ? 0 : qLevel); });
   function judgeQuality(dt) {
     if (saver()) return;
     qSum += dt; qN++; qHold -= dt;
@@ -6451,25 +6502,39 @@ try {
     if (avg > 1 / 45 && qLevel > 0) { qLevel--; qGood = 0; qHold = 3; sizeWorld(); }
     else if (avg < 1 / 57) { if (++qGood >= 6 && qLevel < Q_LEVELS.length - 1) { qLevel++; qGood = 0; qHold = 4; sizeWorld(); } }
     else qGood = 0;
+    for (const w of Object.values(worlds)) w.setQuality?.(qLevel);
   }
 
-  function ensureWorld() {
-    worldLoading ||= import("./world/city.js").then(({ createCity }) => {
-      worldRenderer = new THREE.WebGLRenderer({ canvas: worldCanvas, antialias: false, powerPreference: "high-performance" });
-      worldRenderer.outputColorSpace = THREE.LinearSRGBColorSpace;
-      world = createCity(THREE);
-      const forcedSpot = Number(new URLSearchParams(location.search).get("spot")); // 動作確認用： ?scene=city&spot=3
-      placeAt(world.pois[Number.isInteger(forcedSpot) && world.pois[forcedSpot] ? forcedSpot : Math.floor(Math.random() * world.pois.length)], clock.elapsedTime);
+  function ensureWorld(kind) {
+    worldLoads[kind] ||= import(`./world/${kind}.js`).then((mod) => {
+      if (!worldRenderer) {
+        worldRenderer = new THREE.WebGLRenderer({ canvas: worldCanvas, antialias: false, powerPreference: "high-performance" });
+        worldRenderer.outputColorSpace = THREE.LinearSRGBColorSpace;
+      }
+      const w = kind === "cyber" ? mod.createCyber(THREE) : mod.createCity(THREE, { anisotropy: Math.min(8, worldRenderer.capabilities.getMaxAnisotropy()) });
+      w.setQuality?.(saver() ? 0 : qLevel);
+      worlds[kind] = w;
       sizeWorld();
-      return world;
+      return w;
     });
-    return worldLoading;
+    return worldLoads[kind];
+  }
+  function areaPois() { return world?.pois[curArea] || []; }
+  function placeLabel() {
+    const key = curScene === "rain" ? "rain" : curArea;
+    return (AREA_LABEL[key] || AREA_LABEL.city)[curTod] || "";
   }
   function spotLabel() {
     const spot = rig.path ? "" : rig.poi?.name || "";
+    const label = placeLabel();
     window.__pallasSpot = spot;
+    window.__pallasPlaceLabel = label;
     const el = document.getElementById("place");
-    if (el && worldOn) el.textContent = rig.path ? `${worldLabel}（移動中）` : spot ? `${worldLabel}（${spot}）` : worldLabel;
+    if (el && worldOn) el.textContent = rig.path ? `${label}（移動中）` : spot ? `${label}（${spot}）` : label;
+  }
+  function applyLight() {
+    const key = curArea === "cyber" ? "cyber" : curArea === "space" ? "space" : curScene === "rain" ? "rain" : curTod;
+    setSceneLight(LIGHTS[key] || LIGHTS.night);
   }
   function placeAt(poi, t) {
     rig.poi = poi; rig.path = null; rig.arriveYaw = null;
@@ -6486,41 +6551,83 @@ try {
     else { canvas.classList.remove("full"); box.appendChild(canvas); }
     resize();
   }
-  function syncWorld() {
-    const id = String(window.__pallasSceneId || "").split(":")[0];
-    const want = WORLD_SCENES[id];
-    if (want) {
-      ensureWorld().then((w) => {
-        if (String(window.__pallasSceneId || "").split(":")[0] !== id) return;
-        w.setWeather(want.weather);
-        worldLabel = want.label;
-        if (!worldOn) {
-          worldOn = true;
-          window.__worldShownAt = performance.now();
-          setFull(true);
-          document.body.dataset.world = "city";
-        }
-        spotLabel();
-      }).catch((err) => console.warn("街を表示できませんでした:", err));
-    } else if (worldOn) {
-      worldOn = false;
-      worldFadeUntil = clock.elapsedTime + 1.6;
-      window.__pallasSpot = "";
-      delete document.body.dataset.world;
-      setFull(false);
-    }
+  function pickPoi() {
+    const list = areaPois();
+    const forcedSpot = Number(qs.get("spot")); // 動作確認用： ?scene=city&spot=3
+    if (!curScene || !rig.poi) { if (Number.isInteger(forcedSpot) && list[forcedSpot]) return list[forcedSpot]; }
+    return list[Math.floor(Math.random() * list.length)];
   }
+  function syncWorld() {
+    const sceneId = String(window.__pallasSceneId || "");
+    const [id, variant] = sceneId.split(":");
+    const want = WORLD_SCENES[id];
+    if (!want) {
+      if (worldOn) {
+        worldOn = false;
+        worldFadeUntil = clock.elapsedTime + 1.6;
+        window.__pallasSpot = ""; window.__pallasPlaceLabel = "";
+        delete document.body.dataset.world;
+        setFull(false);
+      }
+      return;
+    }
+    ensureWorld(want.kind).then((w) => {
+      if (String(window.__pallasSceneId || "") !== sceneId) return;
+      const tod = forcedTod || (["dawn", "day", "sunset"].includes(variant) ? variant : null);
+      const enter = () => {
+        world = w;
+        curScene = id; curArea = want.area;
+        curTod = sunFor(tod);
+        w.setWeather?.(want.weather);
+        placeAt(pickPoi(), clock.elapsedTime);
+        spotLabel();
+        applyLight();
+      };
+      if (!worldOn) {
+        enter();
+        worldOn = true;
+        window.__worldShownAt = performance.now();
+        setFull(true);
+        document.body.dataset.world = want.area;
+        spotLabel();
+      } else if (curArea !== want.area || world !== w) {
+        // 世界の中で別の場所へ：いったん暗くしてから移る（第3段階で、実際に飛んで移る演出にする）
+        areaSwitching = true;
+        worldCanvas.style.opacity = "0";
+        setTimeout(() => {
+          enter();
+          document.body.dataset.world = want.area;
+          worldCanvas.style.opacity = "1";
+          areaSwitching = false;
+        }, 700);
+      } else {
+        // 同じ場所の中で天気だけ変わる（街 ⇔ 雨）
+        curScene = id;
+        w.setWeather?.(want.weather);
+        spotLabel(); applyLight();
+      }
+    }).catch((err) => console.warn("3D の景色を表示できませんでした:", err));
+  }
+  // 時間帯は 1 分ごとに見直す（夕方から夜へ、など）
+  setInterval(() => {
+    if (!worldOn) return;
+    const variant = String(window.__pallasSceneId || "").split(":")[1];
+    const tod = forcedTod || (["dawn", "day", "sunset"].includes(variant) ? variant : null);
+    const next = sunFor(tod);
+    if (next !== curTod) { curTod = next; spotLabel(); applyLight(); }
+  }, 60000);
   window.addEventListener("pallas:scene", () => setTimeout(syncWorld, 0));
   setTimeout(syncWorld, 0);
 
   // 次の立ち寄り先へ：上昇して、建物より高いところを飛び、目的地へ降りていく
   function startCruise() {
-    const pois = world.pois.filter((p) => p !== rig.poi);
+    const pois = areaPois().filter((p) => p !== rig.poi);
+    if (!pois.length) return;
     const to = pois[Math.floor(Math.random() * pois.length)];
     const a = rig.pos.clone(), b = to.pos.clone();
     let hMax = 0;
-    for (let k = 0; k <= 48; k++) { _v.lerpVectors(a, b, k / 48); hMax = Math.max(hMax, world.heightAt(_v.x, _v.z)); }
-    const cruise = Math.max(a.y, b.y, hMax + 45);
+    if (world.heightAt) for (let k = 0; k <= 48; k++) { _v.lerpVectors(a, b, k / 48); hMax = Math.max(hMax, world.heightAt(_v.x, _v.z)); }
+    const cruise = Math.max(a.y, b.y, hMax + 45) + (curArea === "clouds" ? 120 : curArea === "cyber" ? 30 : 0);
     const flat = Math.hypot(b.x - a.x, b.z - a.z);
     const dir = new THREE.Vector3(b.x - a.x, 0, b.z - a.z).normalize();
     const lead = Math.min(90, flat * 0.18);
@@ -6538,6 +6645,7 @@ try {
     rig.wideUntil = 0;
     spotLabel();
   }
+  window.__pallasWorlds = worlds; // 動作確認用
   window.pallasWorldCruise = () => { if (world && worldOn && !rig.path) startCruise(); }; // 動作確認用
   const angLerp = (a, b, k) => { while (b - a > Math.PI) b -= Math.PI * 2; while (b - a < -Math.PI) b += Math.PI * 2; return a + (b - a) * k; };
 
@@ -6546,8 +6654,10 @@ try {
     const idle = state === "idle" && !(motion.departUntil && t < motion.departUntil);
     if (rig.path) {
       const remain = rig.len - rig.s;
-      const want = idle ? Math.min(36, Math.sqrt(2 * 7 * Math.max(0, remain)) + 0.5) : 0;
-      rig.speed += Math.max(-9 * dt, Math.min(7 * dt, want - rig.speed));
+      const vmax = curArea === "space" ? 260 : curArea === "clouds" ? 90 : curArea === "cyber" ? 28 : 36;
+      const acc = vmax / 5;
+      const want = idle ? Math.min(vmax, Math.sqrt(2 * acc * Math.max(0, remain)) + 0.5) : 0;
+      rig.speed += Math.max(-acc * 1.3 * dt, Math.min(acc * dt, want - rig.speed));
       rig.s = Math.min(rig.len, rig.s + rig.speed * dt);
       const u = rig.s / rig.len;
       rig.path.getPointAt(u, rig.pos);
@@ -6578,7 +6688,7 @@ try {
         rig.nextWide = t + 70 + Math.random() * 60;
       }
       if (!idle) rig.wideUntil = 0;
-      if (idle && !reduceMotion && t > rig.nextMove && world.pois.length > 1) startCruise();
+      if (idle && !reduceMotion && t > rig.nextMove && areaPois().length > 1) startCruise();
     }
   }
   // カメラの構図（パラスのまわりの空間の中での位置）。状態に合わせてゆっくり寄ったり引いたりする
@@ -6611,9 +6721,12 @@ try {
     _q.copy(rigQ).multiply(camera.quaternion).multiply(pitchQ);
     worldCam.matrixWorld.compose(_v, _q, ONE);
     worldCam.matrixWorldInverse.copy(worldCam.matrixWorld).invert();
+    // 高く昇るほど遠くまで見えるので、描く距離を伸ばす
+    const far = Math.max(30000, _v.y * 7 + 12000), near = Math.max(0.5, _v.y / 2500);
+    if (Math.abs(worldCam.far - far) > far * 0.1 || worldCam.near !== near) { worldCam.far = far; worldCam.near = near; worldCam.updateProjectionMatrix(); }
     accent.copy(accentBase).lerp(accentThink, cur.purple);
     const H = innerHeight * worldPR();
-    world.update(t, dt, worldCam, { accent, reduceMotion, px: H / (2 * Math.tan(THREE.MathUtils.degToRad(worldCam.fov / 2))) });
+    world.update(t, dt, worldCam, { accent, reduceMotion, sunDir, px: H / (2 * Math.tan(THREE.MathUtils.degToRad(worldCam.fov / 2))) });
     worldRenderer.render(world.scene, worldCam);
   }
 
