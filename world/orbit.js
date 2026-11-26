@@ -12,8 +12,10 @@ export function createOrbit(THREE, opts = {}) {
   const scene = new THREE.Scene();
   const loader = new THREE.TextureLoader();
   // 画像は読み込んだあと 1024×512 に縮めてから使う（元の 2048 のままだと iPhone のメモリを食いすぎる）
+  const loads = [];
   const tex = (name, size = 1024) => {
     const t = new THREE.Texture();
+    let done; loads.push(new Promise((r) => { done = r; }));
     t.anisotropy = opts.anisotropy || 1;
     t.minFilter = THREE.LinearMipmapLinearFilter;
     t.magFilter = THREE.LinearFilter;
@@ -25,7 +27,8 @@ export function createOrbit(THREE, opts = {}) {
       t.image = c;
       t.needsUpdate = true;
       src.dispose();
-    });
+      done();
+    }, undefined, () => done());
     return t;
   };
   const uniforms = {
@@ -163,5 +166,7 @@ export function createOrbit(THREE, opts = {}) {
   function horizonDip(alt) { return Math.acos(R / (R + Math.max(0, alt))); }
   function setQuality() {}
 
-  return { scene, update, camRange, horizonDip, setQuality, earth, atmo, sky, pois: { space: pois }, kind: "orbit" };
+  // 地球の画像が読み込み終わったら解決する（宇宙へ昇る前に待つ。黒い地球が見えないように）
+  const ready = Promise.all(loads);
+  return { scene, update, camRange, horizonDip, setQuality, ready, earth, atmo, sky, pois: { space: pois }, kind: "orbit" };
 }
