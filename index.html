@@ -2309,6 +2309,10 @@ function showKnowledgePanel(k, idxs) {
 // 話しかけられた内容が資料に強く関係していれば、関係する部分を自動で添える
 // （パラスが調べ忘れても資料に基づいて答えられるように。パラス自身の使い方の資料は道具で足りるので除く）
 const AUTO_K_MIN = 8;
+// いま話している分野（資料のいちばん上のフォルダ名）。20分話が途切れたら忘れる
+let kTopic = { dom: "", at: 0 };
+const KTOPIC_TTL = 20 * 60 * 1000;
+const kDomain = (k, i) => k.docs[k.chunks[i].doc].path.split("/")[0];
 const AUTO_K_CARD = 20;
 async function autoKnowledge(text) {
   try {
@@ -2318,8 +2322,26 @@ async function autoKnowledge(text) {
     // いちばん関係が深いのがパラスの使い方の資料なら、道具の話なので何も添えない
     if (all.length && /^パラスの使い方/.test(k.docs[k.chunks[all[0].i].doc].path)) return null;
     const hits = all.filter((x) => !/^パラスの使い方/.test(k.docs[k.chunks[x.i].doc].path));
-    if (!hits.length || hits[0].sc < AUTO_K_MIN) return null;
-    const top = hits.filter((x) => x.sc >= hits[0].sc * 0.6).slice(0, 3);
+    if (!hits.length) return null;
+    // 話題の分野（ギリシャ神話・FF14・コーヒー など）が続いているあいだは、その分野の資料を優先する。
+    // ほかの分野の資料は、はっきり強く関係するときだけ（話題が変わったとき）に使う。
+    const cur = kTopic.dom && Date.now() - kTopic.at < KTOPIC_TTL ? kTopic.dom : "";
+    let pool = hits;
+    if (cur) {
+      const same = hits.filter((x) => kDomain(k, x.i) === cur);
+      const other = hits.find((x) => kDomain(k, x.i) !== cur);
+      // ほかの分野がはっきり強い（名前を出して話題を変えた）ときだけ、そちらへ移る
+      const jump = other && other.sc >= AUTO_K_CARD && (!same.length || other.sc >= same[0].sc * 1.5);
+      if (!jump) {
+        if (!same.length || same[0].sc < AUTO_K_MIN) return null;
+        pool = same;
+      }
+    }
+    if (pool[0].sc < AUTO_K_MIN) return null;
+    // 添える資料は、いちばん関係の深い資料と同じ分野のものだけにする（分野が混ざると話がそれる）
+    const dom = kDomain(k, pool[0].i);
+    const top = pool.filter((x) => x.sc >= pool[0].sc * 0.6 && kDomain(k, x.i) === dom).slice(0, 3);
+    kTopic = { dom, at: Date.now() };
     const idxs = withSiblings(k, top, 5);
     const refs = [];
     for (const i of idxs) {
@@ -2329,7 +2351,7 @@ async function autoKnowledge(text) {
     const block = "[資料からの抜粋（マスターの発言に関係しそうな部分を自動で検索したもの）]\n" +
       idxs.map((i) => { const c = k.chunks[i]; return `【${chunkLabel(k, c)}】\n${c.text.slice(0, 900)}`; }).join("\n\n");
     // 関係がはっきり強いときは、画面にもカードで出す
-    if (hits[0].sc >= AUTO_K_CARD) showKnowledgePanel(k, idxs.filter((i) => k.chunks[i].doc === k.chunks[idxs[0]].doc));
+    if (pool[0].sc >= AUTO_K_CARD) showKnowledgePanel(k, idxs.filter((i) => k.chunks[i].doc === k.chunks[idxs[0]].doc));
     return { block, refs };
   } catch { return null; }
 }
@@ -2347,6 +2369,7 @@ async function searchKnowledge(input) {
     const d = k.docs[k.chunks[i].doc];
     if (!turnKnowledge.some((x) => x.path === d.path)) turnKnowledge.push({ path: d.path, title: d.title });
   }
+  kTopic = { dom: kDomain(k, top[0].i), at: Date.now() };
   showKnowledgePanel(k, idxs.filter((i) => k.chunks[i].doc === k.chunks[idxs[0]].doc).slice(0, 4));
   return {
     result: idxs.map((i) => {
