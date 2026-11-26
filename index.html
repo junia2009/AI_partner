@@ -530,7 +530,7 @@
       </div>
       <div class="field">
         <label class="check"><input id="wakeWord" type="checkbox"> 「パラス」と呼びかけると聞き取りを始める（タップ不要）</label>
-        <p class="hint">端末の中だけで「パラス」を聞き分けます（声は外に送りません）。はじめてオンにしたときに約50MBの音声認識データを読み込みます。アプリを画面に出している間だけ動きます。Bluetooth イヤホンでは通話用の音質になります。</p>
+        <p class="hint">端末の中だけで「パラス」を聞き分けます（声は外に送りません）。はじめてオンにしたときに約30MBの音声認識データを読み込みます。アプリを画面に出している間だけ動きます。Bluetooth イヤホンでは通話用の音質になります。</p>
       </div>
       <div class="field">
         <label for="bgQuality">背景の画質</label>
@@ -4628,7 +4628,10 @@ function stopAll() {
 // 端末の中の音声認識（Vosk・日本語の小さいモデル）で「パラス」だけを待つ。声は外へ送らない。
 // 待っているのは、何もしていない（idle）とき・画面に出ているときだけ。聞き取り・返事の間は止める
 const VOSK_JS = "https://cdn.jsdelivr.net/npm/vosk-browser@0.0.8/dist/vosk.js";
-const VOSK_MODEL = "assets/vosk/model-ja.tar.gz";
+// 「パラス」だけを聞き分ければよいので、文章の聞き取りにしか使わない言語データ（Gr.fst）と、
+// 単語の一覧（約20万語）を「パラス」など数語に絞った軽い版を使う（聞き分けの結果は元と同じ・メモリが大きく減る）
+const VOSK_MODEL = "assets/vosk/model-ja-lite.tar.gz";
+const VOSK_OLD = ["assets/vosk/model-ja.tar.gz"];
 const wake = { model: null, loading: null, stream: null, ctx: null, node: null, rec: null, running: false, unlocked: false, lastHit: 0, buf: [], bufStart: 0, total: 0, rate: 16000 };
 const WAKE_CONF = 0.95;       // 「プラス」などの聞き違いを避けるため、かなり確かなときだけ反応する
 const WAKE_KEEP_SEC = 15;     // 「パラス、明日の予定は？」の続きを拾うため、直近の音を少しだけ手元に残す（外へは送らない）
@@ -4646,13 +4649,14 @@ async function wakeLoadModel() {
         document.head.appendChild(sc);
       });
     }
-    // モデル（約50MB）は一度読んだら端末に保存して、次からはすぐ使う
+    // モデル（約30MB）は一度読んだら端末に保存して、次からはすぐ使う
     let blob = null;
     try {
       const cache = await caches.open("pallas-vosk-v1");
+      for (const old of VOSK_OLD) cache.delete(old).catch(() => {}); // 前の大きいデータは端末から消す
       let res = await cache.match(VOSK_MODEL);
       if (!res) {
-        setWakeStatus("呼びかけ用の音声データを読み込んでいます（初回のみ・約50MB）…");
+        setWakeStatus("呼びかけ用の音声データを読み込んでいます（初回のみ・約30MB）…");
         res = await fetch(VOSK_MODEL);
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         await cache.put(VOSK_MODEL, res.clone());
@@ -4663,7 +4667,9 @@ async function wakeLoadModel() {
       blob = await res.blob();
     }
     const url = URL.createObjectURL(blob);
-    const model = await window.Vosk.createModel(url);
+    let model;
+    try { model = await window.Vosk.createModel(url); }
+    finally { URL.revokeObjectURL(url); blob = null; } // 読み込みに使った元データはすぐ手放す（メモリ節約）
     model.setLogLevel(-2);
     wake.model = model;
     return model;
