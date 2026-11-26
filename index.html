@@ -6886,7 +6886,7 @@ try {
     rig.wideUntil = 0;
     spotLabel();
   }
-  window.__pallasWorlds = worlds; // 動作確認用
+  window.__pallasWorlds = worlds; window.__pallasRig = rig; window.__pallasWorldCam = worldCam; // 動作確認用
   window.pallasWorldCruise = () => { if (world && worldOn && !rig.path) startCruise(); }; // 動作確認用
 
   // ===== 場所から場所へ、実際に飛んで移る（第3段階） =====
@@ -6941,17 +6941,29 @@ try {
       A = [p, V3(p.x * 0.4, p.y + 80, p.z * 0.4), V3(6, 320, 6), V3(0, 720, 0)];
       B0 = [V3(0, 395, 0), V3(0, 470, 0)];
     } else if (toK === "orbit") {
-      // 真上へ昇り続けて、大気を抜けて宇宙へ
+      // 真上へ昇り続ける。高さ 12km からは丸い地球を奥に描き、15〜40km で平らな地面と雲が透けて消えていく。
+      // 65km まで昇った所（見た目はもう宇宙そのもの）で中身だけ切り替えるので、差し替えは見えない
       const x = p.x * 0.5, z = p.z * 0.5;
-      A = [p, V3(p.x, p.y + 260, p.z), V3(p.x * 0.8, 7000, p.z * 0.8), V3(x, 28000, z)];
-      B0 = [V3(x, 28000, z), V3(x * 0.7, 110000, z * 0.7)];
+      A = [p, V3(p.x, p.y + 260, p.z), V3(p.x * 0.8, 7000, p.z * 0.8), V3(x, 25000, z), V3(x * 0.8, 65000, z * 0.8)];
+      B0 = [V3(x * 0.8, 65000, z * 0.8), V3(x * 0.6, 150000, z * 0.6)];
     } else {
-      // 宇宙から降りる：大気に入って、目的地の上へ
+      // 宇宙から降りる：65km で中身を街に切り替え、40〜15km で地面と雲が浮かび上がり、目的地へ
       const x = dest.x * 0.5, z = dest.z * 0.5;
-      A = [p, V3((p.x + x) / 2, Math.max(60000, p.y * 0.4), (p.z + z) / 2), V3(x, 28000, z)];
-      B0 = [V3(x, 28000, z), V3(dest.x * 0.8, Math.max(dest.y + 2500, 7000), dest.z * 0.8)];
+      A = [p, V3((p.x + x) / 2, Math.max(150000, p.y * 0.4), (p.z + z) / 2), V3(x, 65000, z)];
+      B0 = [V3(x, 65000, z), V3(x * 0.9, 25000, z * 0.9), V3(dest.x * 0.8, Math.max(dest.y + 2500, 7000), dest.z * 0.8)];
     }
+    const blend = (toK === "orbit" && fromK === "city") || (fromK === "orbit" && toK === "city");
     await flyPath(A, flightDur(A), null, easeIn);
+    if (blend) {
+      // 宇宙と街は同じ座標の世界なので、重ね描きのまま中身だけ切り替える（写真の差し替えはしない）
+      world = toW;
+      onSwitch?.();
+      rig.pos.copy(B0[0]);
+      const B = [...B0, ...route(B0[B0.length - 1], dest).slice(1)];
+      await flyPath(B, flightDur(B), null, easeOut);
+      if (fromK === "orbit") dropWorld("orbit"); // 降りきったら宇宙のデータを捨てる
+      return;
+    }
     // 今の景色を写真に撮って重ね、前へ流れながら消える間に、下を次の場所に切り替える
     await takeSnapshot();
     world = toW;
@@ -6969,6 +6981,8 @@ try {
     if (!want || !worldOn || !world || reduceMotion) return false;
     if (travelId) { queuedTravel = toId; return true; } // 飛んでいる途中なら、着いてから次へ
     const w = await ensureWorld(want.kind);
+    // 宇宙へは、地球の画像が読み込み終わってから飛び立つ（昇る途中で黒い地球が見えないように）
+    if (w.ready) await Promise.race([w.ready, new Promise((r) => setTimeout(r, 8000))]);
     const tod = (["night", "dawn", "day", "sunset"].includes(variant) ? variant : null) || forcedTod;
     travelId = toId;
     travelDest = (AREA_LABEL[id === "rain" ? "rain" : want.area] || AREA_LABEL.city)[sunFor(tod)] || "";
@@ -7110,7 +7124,8 @@ try {
     _v.copy(camera.position).multiplyScalar(rig.scale).applyQuaternion(rigQ).add(pos);
     _q.copy(rigQ).multiply(camera.quaternion).multiply(pitchQ);
     // 宇宙では地平線が下がる（地球が丸い）ので、その分カメラを下へ向ける
-    if (w.horizonDip) _q.multiply(dipQ.setFromAxisAngle(AXIS_X, -w.horizonDip(rig.pos.y) * 0.85));
+    // 街と宇宙で同じ向きにする（重ね描きや切り替えのとき、景色がずれたり跳んだりしないように）
+    if (w.kind !== "cyber") _q.multiply(dipQ.setFromAxisAngle(AXIS_X, -Math.acos(6371000 / (6371000 + Math.max(0, pos.y))) * 0.85));
     worldCam.matrixWorld.compose(_v, _q, ONE);
     worldCam.matrixWorldInverse.copy(worldCam.matrixWorld).invert();
     // 高く昇るほど遠くまで見えるので、描く距離を伸ばす。手前の限界を近づけすぎると、遠くの面がチラつく
@@ -7135,7 +7150,21 @@ try {
     if (saver() && frameNo % 2) { if (merged) { /* 景色を描かないコマは前の絵のまま */ } return; } // 省電力では 30 コマで描く
     camera.updateMatrixWorld();
     accent.copy(accentBase).lerp(accentThink, cur.purple);
-    drawWorld(world, rig.pos, rig.yaw, dt, t);
+    // 街の世界で高く昇っているとき：奥に丸い地球（宇宙の世界）を描き、その上に透けていく街の世界を重ねる
+    const orbit = worlds.orbit;
+    if (world.kind === "city" && orbit && rig.pos.y > 12000) {
+      const x = Math.min(1, Math.max(0, (rig.pos.y - 15000) / 25000));
+      const f = x * x * (3 - 2 * x);
+      drawWorld(orbit, rig.pos, rig.yaw, dt, t);
+      wr.autoClear = false;
+      wr.clearDepth();
+      world.setFade?.(f);
+      drawWorld(world, rig.pos, rig.yaw, dt, t);
+      wr.autoClear = true;
+    } else {
+      if (world.kind === "city") world.setFade?.(0);
+      drawWorld(world, rig.pos, rig.yaw, dt, t);
+    }
     drawPallasOver();
   }
   // 景色の上にパラスを重ねて描く（奥行きは別なので、深さだけ消してから）

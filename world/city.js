@@ -33,6 +33,7 @@ export function createCity(THREE, opts = {}) {
     uSunDir: { value: new THREE.Vector3(0, -1, 0) }, uSunCol: { value: new THREE.Color(0) },
     uHor: { value: new THREE.Color(0x1a1428) }, uZen: { value: new THREE.Color(0x050a18) },
     uAlt: { value: 0 },
+    uFade: { value: 0 }, // 宇宙へ昇るとき、平らな地面と雲を透明にしていく（下に丸い地球が見えてくる）
     uCover: { value: 0.33 }, uCoverFar: { value: 0.68 },
     uNoise: { value: makeNoiseTexture(THREE, 256, 9, opts.anisotropy || 1) },
   };
@@ -136,6 +137,7 @@ export function createCity(THREE, opts = {}) {
     }
   }
 
+  let mountains = null, aMeshRef = null;
   const boxGeo = new THREE.BoxGeometry(1, 1, 1).translate(0, 0.5, 0);
   const bGeo = boxGeo.clone();
   const n = blds.length;
@@ -263,6 +265,7 @@ export function createCity(THREE, opts = {}) {
     antennas.forEach(([x, y, z, h], i) => { m4.compose(new THREE.Vector3(x, y, z), q0, new THREE.Vector3(1, h, 1)); aMesh.setMatrixAt(i, m4); });
     aMesh.frustumCulled = false;
     scene.add(aMesh);
+    aMeshRef = aMesh;
   }
 
   // ---------- 地面（道路・街灯・郊外の家の明かり） ----------
@@ -299,7 +302,7 @@ export function createCity(THREE, opts = {}) {
     uniforms,
     vertexShader: `varying vec3 vW; varying float vDist;
       void main() { vec4 w = modelMatrix * vec4(position, 1.0); vW = w.xyz; vec4 mv = viewMatrix * w; vDist = length(mv.xyz); gl_Position = projectionMatrix * mv; }`,
-    fragmentShader: `uniform float uTime; uniform float uNight; uniform float uWet; uniform vec3 uCam; uniform vec3 uAccent;
+    fragmentShader: `uniform float uTime; uniform float uNight; uniform float uWet; uniform vec3 uCam; uniform vec3 uAccent; uniform float uFade;
       varying vec3 vW; varying float vDist;
       ${HASH}
       ${FOG}
@@ -343,11 +346,13 @@ export function createCity(THREE, opts = {}) {
         float hw = min(abs(mod(p.x + 400.0, 1200.0) - 600.0), abs(mod(p.y + 400.0, 1500.0) - 750.0));
         col += vec3(1.0, 0.6, 0.3) * smoothstep(5.0, 0.0, hw) * 0.35 * suburb * uNight;
         if (vW.z > ${SHORE}.0 && vW.z < ${FAR_SHORE}.0 && abs(vW.x) < 7000.0) col = waterCol(vW);
-        gl_FragColor = vec4(applyFog(col, vDist), 1.0);
+        gl_FragColor = vec4(applyFog(col, vDist), 1.0 - uFade);
       }`,
   });
   groundMat.polygonOffset = true; groundMat.polygonOffsetFactor = 4; groundMat.polygonOffsetUnits = 8; // 湾の水面とのチラつき防止
   const ground = new THREE.Mesh(new THREE.PlaneGeometry(400000, 400000, 1, 1).rotateX(-Math.PI / 2), groundMat);
+  groundMat.transparent = true; // ふだんは不透明（uFade = 0）。宇宙へ昇るときだけ透けていく
+  ground.renderOrder = -1;
   scene.add(ground);
 
   // ---------- 湾（水面に街の明かりが揺れて映る） ----------
@@ -493,7 +498,8 @@ export function createCity(THREE, opts = {}) {
         uniform float uDay; uniform vec3 uHor;
         void main() { vec3 col = mix(vec3(0.03, 0.035, 0.05), vec3(0.12, 0.15, 0.18) + uHor * 0.15, uDay); gl_FragColor = vec4(applyFog(col, vDist * 0.92), 1.0); }`,
     });
-    scene.add(new THREE.Mesh(geo, mMat));
+    mountains = new THREE.Mesh(geo, mMat);
+    scene.add(mountains);
   }
 
   // ---------- 空（夜空・街明かり・星・月） ----------
@@ -600,7 +606,7 @@ export function createCity(THREE, opts = {}) {
       vertexShader: `varying vec3 vW; varying float vDist;
         void main() { vec4 w = modelMatrix * vec4(position, 1.0); vW = w.xyz; vec4 mv = viewMatrix * w; vDist = length(mv.xyz); gl_Position = projectionMatrix * mv; }`,
       fragmentShader: `uniform sampler2D uNoise; uniform float uSlice; uniform float uTime; uniform float uCover; uniform float uCoverFar;
-        uniform float uDay; uniform float uWarm; uniform float uNight; uniform float uWet; uniform vec3 uSunCol; uniform vec3 uHor; uniform vec3 uSunDir; uniform vec3 uCam;
+        uniform float uDay; uniform float uWarm; uniform float uNight; uniform float uWet; uniform vec3 uSunCol; uniform vec3 uHor; uniform vec3 uSunDir; uniform vec3 uCam; uniform float uFade;
         varying vec3 vW; varying float vDist;
         ${FOG}
         void main() {
@@ -622,7 +628,7 @@ export function createCity(THREE, opts = {}) {
           // 夜は、街の明かりが雲の底を橙色に照らす
           col += vec3(0.3, 0.14, 0.09) * (1.0 - uSlice) * uNight * exp(-r / 2600.0);
           float edge = 1.0 - smoothstep(16000.0, 26000.0, length(vW.xz - uCam.xz));
-          gl_FragColor = vec4(applyFog(col, vDist * 0.15), a * 0.5 * edge);
+          gl_FragColor = vec4(applyFog(col, vDist * 0.15), a * 0.5 * edge * (1.0 - uFade));
         }`,
     });
     const m = new THREE.Mesh(cloudGeo, mat);
@@ -664,6 +670,15 @@ export function createCity(THREE, opts = {}) {
     const ground = heightAt(p.pos.x, p.pos.z);
     if (!p.canyon && p.pos.y < ground + 12) p.pos.y = ground + 12; // 谷間は交差点の上なので、そのままの高さ
     p.yaw = yawTo(p.pos, p.look[0], p.look[1]);
+  }
+
+  // ---------- 宇宙との重ね描き ----------
+  // f = 0：ふつうの街。f = 1：地面も雲も透明（下に描いた丸い地球がそのまま見える）
+  function setFade(f) {
+    uniforms.uFade.value = f;
+    sky.visible = f <= 0.001;          // 空は宇宙側の星空に任せる
+    const tiny = f > 0.02;             // この高さでは建物などは点にもならないので描かない
+    for (const o of [bMesh, tower, bridge, glowPoints, carPoints, mountains, aMeshRef]) if (o) o.visible = !tiny;
   }
 
   // ---------- 天気と時間 ----------
@@ -736,7 +751,7 @@ export function createCity(THREE, opts = {}) {
   }
 
   return {
-    scene, update, setWeather, setQuality, heightAt, tower: TOWER, uniforms, clouds,
+    scene, update, setWeather, setQuality, setFade, heightAt, tower: TOWER, uniforms, clouds,
     pois: { city: pois, clouds: cloudPois, space: spacePois },
   };
 
